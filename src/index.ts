@@ -69,6 +69,20 @@ async function main(): Promise<void> {
 		botLogins: parseBotLogins(getInput('bot-logins')),
 	};
 
+	// Validate provider credentials before touching any globals so we don't
+	// pollute process.env on an invalid configuration.
+	const hasCloudflare = !!ctx.cloudflareApiKey && !!ctx.cloudflareAccountId;
+	if (!ctx.anthropicApiKey && !hasCloudflare) {
+		throw new Error(
+			'No LLM credentials provided. Set "anthropic-api-key", or set both "cloudflare-api-key" and "cloudflare-account-id" to use Workers AI models.',
+		);
+	}
+	if (ctx.cloudflareApiKey && !ctx.cloudflareAccountId) {
+		throw new Error(
+			'"cloudflare-api-key" is set but "cloudflare-account-id" is missing; both are required for Workers AI.',
+		);
+	}
+
 	// Provide LLM credentials to Flue/pi-ai via env. The provider is selected by
 	// the `triage-model` / `verification-model` prefix (e.g. "anthropic/..." or
 	// "cloudflare-workers-ai/..."), and pi-ai reads the matching env var.
@@ -80,19 +94,6 @@ async function main(): Promise<void> {
 	}
 	if (ctx.cloudflareAccountId) {
 		process.env.CLOUDFLARE_ACCOUNT_ID = ctx.cloudflareAccountId;
-	}
-
-	// Require at least one usable provider credential.
-	const hasCloudflare = !!ctx.cloudflareApiKey && !!ctx.cloudflareAccountId;
-	if (!ctx.anthropicApiKey && !hasCloudflare) {
-		throw new Error(
-			'No LLM credentials provided. Set "anthropic-api-key", or set both "cloudflare-api-key" and "cloudflare-account-id" to use Workers AI models.',
-		);
-	}
-	if (ctx.cloudflareApiKey && !ctx.cloudflareAccountId) {
-		throw new Error(
-			'"cloudflare-api-key" is set but "cloudflare-account-id" is missing; both are required for Workers AI.',
-		);
 	}
 
 	// Parse the event into the shape the router expects.
