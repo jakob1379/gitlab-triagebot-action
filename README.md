@@ -148,7 +148,26 @@ The action uses two GitHub tokens:
 - **`read-token`** — For reading issues, labels, and PRs. The default `GITHUB_TOKEN` works.
 - **`write-token`** — For posting comments, pushing fix branches, creating PRs, and managing labels. This should be a GitHub App token or PAT with write access to issues and contents.
 
-You also need an **`anthropic-api-key`** for the AI agent.
+You also need credentials for the AI agent. Choose one of:
+
+- **`anthropic-api-key`** — to use Anthropic models (the default `triage-model` / `verification-model`).
+- **`cloudflare-api-key`** + **`cloudflare-account-id`** — to use Cloudflare Workers AI models (e.g. Kimi). Requires setting `triage-model` / `verification-model` to a `cloudflare-workers-ai/*` model.
+
+Workers AI is called over its OpenAI-compatible REST endpoint, so the action still runs on the standard GitHub Actions runner — no Worker deployment is required.
+
+#### Using Cloudflare Workers AI (Kimi)
+
+```yaml
+      - uses: withastro/triagebot-action@v1
+        with:
+          read-token: ${{ secrets.GITHUB_TOKEN }}
+          write-token: ${{ secrets.BOT_GITHUB_TOKEN }}
+          cloudflare-api-key: ${{ secrets.CLOUDFLARE_API_KEY }}
+          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          triage-model: cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code
+          verification-model: cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
+          triage-skill: .agents/skills/triage
+```
 
 ## Inputs
 
@@ -156,14 +175,18 @@ You also need an **`anthropic-api-key`** for the AI agent.
 |-------|----------|---------|-------------|
 | `read-token` | Yes | | GitHub token for reading issues/labels/PRs |
 | `write-token` | Yes | | GitHub token for posting comments, pushing branches, creating PRs |
-| `anthropic-api-key` | Yes | | Anthropic API key for LLM calls |
+| `anthropic-api-key` | No¹ | | Anthropic API key for LLM calls |
+| `cloudflare-api-key` | No¹ | | Cloudflare API token with Workers AI access. Enables `cloudflare-workers-ai/*` models. Requires `cloudflare-account-id` |
+| `cloudflare-account-id` | No¹ | | Cloudflare account ID for the Workers AI REST endpoint. Required when `cloudflare-api-key` is set |
 | `triage-skill` | Yes | | Path to triage skill directory (`SKILL.md`, `reproduce.md`, etc.) |
 | `pr-skill` | No | | Path to PR writer skill directory. If not provided, uses a built-in prompt. |
 | `auto-pr-on-fix` | No | `false` | When `true`, open a PR immediately after triage finds and pushes a fix, skipping the preview/confirmation flow. |
 | `bot-logins` | No | | Comma-separated list of bot usernames whose comments should be ignored. `github-actions[bot]` is always included. |
 | `build-command` | No | | Command to build the project before triage |
-| `triage-model` | No | `anthropic/claude-opus-4-6` | Model for the triage pipeline |
+| `triage-model` | No | `anthropic/claude-opus-4-6` | Model for the triage pipeline (`provider/model-id`, e.g. `cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code`) |
 | `verification-model` | No | `anthropic/claude-sonnet-4-6` | Model for fix verification and retriage checks |
+
+¹ Provide either `anthropic-api-key`, or both `cloudflare-api-key` and `cloudflare-account-id`. The credentials must match the provider prefix used in `triage-model` / `verification-model`.
 
 ### Label inputs
 

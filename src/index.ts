@@ -56,7 +56,9 @@ async function main(): Promise<void> {
 		repo,
 		readToken: getRequiredInput('read-token'),
 		writeToken: getRequiredInput('write-token'),
-		anthropicApiKey: getRequiredInput('anthropic-api-key'),
+		anthropicApiKey: getInput('anthropic-api-key') || null,
+		cloudflareApiKey: getInput('cloudflare-api-key') || null,
+		cloudflareAccountId: getInput('cloudflare-account-id') || null,
 		triageSkill: getRequiredInput('triage-skill'),
 		prSkill: getInput('pr-skill') || null,
 		prSkillName: getInput('pr-skill-name') || 'pr-writer',
@@ -68,8 +70,32 @@ async function main(): Promise<void> {
 		botLogins: parseBotLogins(getInput('bot-logins')),
 	};
 
-	// Set the Anthropic API key for Flue.
-	process.env.ANTHROPIC_API_KEY = ctx.anthropicApiKey;
+	// Validate provider credentials before touching any globals so we don't
+	// pollute process.env on an invalid configuration.
+	const hasCloudflare = !!ctx.cloudflareApiKey && !!ctx.cloudflareAccountId;
+	if (!ctx.anthropicApiKey && !hasCloudflare) {
+		throw new Error(
+			'No LLM credentials provided. Set "anthropic-api-key", or set both "cloudflare-api-key" and "cloudflare-account-id" to use Workers AI models.',
+		);
+	}
+	if (ctx.cloudflareApiKey && !ctx.cloudflareAccountId) {
+		throw new Error(
+			'"cloudflare-api-key" is set but "cloudflare-account-id" is missing; both are required for Workers AI.',
+		);
+	}
+
+	// Provide LLM credentials to Flue/pi-ai via env. The provider is selected by
+	// the `triage-model` / `verification-model` prefix (e.g. "anthropic/..." or
+	// "cloudflare-workers-ai/..."), and pi-ai reads the matching env var.
+	if (ctx.anthropicApiKey) {
+		process.env.ANTHROPIC_API_KEY = ctx.anthropicApiKey;
+	}
+	if (ctx.cloudflareApiKey) {
+		process.env.CLOUDFLARE_API_KEY = ctx.cloudflareApiKey;
+	}
+	if (ctx.cloudflareAccountId) {
+		process.env.CLOUDFLARE_ACCOUNT_ID = ctx.cloudflareAccountId;
+	}
 
 	// Parse the event into the shape the router expects.
 	const issue = payload.issue;

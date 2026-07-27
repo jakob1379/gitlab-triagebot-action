@@ -8,7 +8,9 @@ export interface ActionContext {
 	repo: string;
 	readToken: string;
 	writeToken: string;
-	anthropicApiKey: string;
+	anthropicApiKey: string | null;
+	cloudflareApiKey: string | null;
+	cloudflareAccountId: string | null;
 	triageSkill: string;
 	prSkill: string | null;
 	prSkillName: string;
