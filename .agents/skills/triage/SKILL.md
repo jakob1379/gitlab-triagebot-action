@@ -18,7 +18,7 @@ This is a GitHub Action project written in TypeScript. The codebase is small —
 You need either:
 
 - `issueTitle` and `issueBody` provided in args, OR
-- A GitHub issue number or URL (use `gh issue view` to fetch details)
+- An issue number or URL (use `gh issue view`, or `glab issue view` on GitLab, to fetch details)
 
 If a `triageDir` is provided in args, use that as the working directory. Otherwise, default to `triage/gh-<issue_number>`.
 

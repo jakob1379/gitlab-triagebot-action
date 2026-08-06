@@ -12,14 +12,16 @@ import * as v from 'valibot';
 import type { ActionContext } from '../context.ts';
 import { createSession } from '../flue.ts';
 import {
-	addLabels,
+	addPullRequestLabels,
+	agentEnv,
 	createPullRequest,
+	defaultBranch,
 	fetchIssueDetails,
 	findBranch,
 	findPullRequest,
 	postComment,
 	swapLabel,
-} from '../github.ts';
+} from '../forge.ts';
 import { generatePRContent } from '../pr.ts';
 
 export async function handleVerifyFix(issueNumber: number, ctx: ActionContext): Promise<void> {
@@ -45,7 +47,7 @@ export async function handleVerifyFix(issueNumber: number, ctx: ActionContext): 
 
 	const agent = createAgent(() => ({
 		sandbox: local({
-			env: { GH_TOKEN: ctx.readToken },
+			env: agentEnv(ctx.readToken),
 		}),
 		model: ctx.verificationModel,
 	}));
@@ -162,12 +164,12 @@ Return your classification.`,
 
 	const pr = await createPullRequest(
 		ctx.repo,
-		{ head: branch, base: 'main', title: prContent.title, body: prContent.body },
+		{ head: branch, base: defaultBranch, title: prContent.title, body: prContent.body },
 		ctx.writeToken,
 	);
 
 	console.info(`PR created: ${pr.html_url}`);
-	await addLabels(ctx.repo, pr.number, [ctx.labels.prFixVerified], ctx.writeToken);
+	await addPullRequestLabels(ctx.repo, pr.number, [ctx.labels.prFixVerified], ctx.writeToken);
 	await swapLabel(
 		ctx.repo,
 		issueNumber,

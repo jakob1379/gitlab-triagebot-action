@@ -1,0 +1,65 @@
+# GitLab CI equivalent of .github/workflows/triage.yml
+#
+# GitLab has no issue-event pipeline source, but it does not need an external
+# webhook receiver either: a project webhook can POST straight at the pipeline
+# trigger endpoint, as long as the ref is in the URL.
+#
+#   Settings > Webhooks > URL:
+#     https://gitlab.example.com/api/v4/projects/<id>/ref/main/trigger/pipeline?token=<trigger_token>
+#   Triggers: Issues events, Comments events
+#
+# The ref in the URL wins over anything in the payload, and GitLab exposes the
+# full webhook body to the job as $TRIGGER_PAYLOAD — a *file path*, which is
+# exactly the shape the bot wants for GITHUB_EVENT_PATH. src/gitlab-event.ts
+# translates the GitLab body into the event the router already understands.
+#
+# CI_PIPELINE_SOURCE is `trigger`, not anything issue-specific, so rules: cannot
+# gate on the event type — the payload is a file, which rules: cannot read.
+# Gating happens in-job instead: src/router.ts skips merge request comments,
+# and src/index.ts resolves the token's own username so the bot ignores the
+# comments it posts itself.
+#
+# Set as masked CI/CD variables:
+#   INPUT_READ_TOKEN   — project access token, read_api + read_repository
+#                        (read_repository is needed: fix-branch lookup uses git)
+#   INPUT_WRITE_TOKEN  — project access token, api + write_repository
+#                        (CI_JOB_TOKEN cannot write issues, so it will not do)
+#   INPUT_ANTHROPIC_API_KEY (or INPUT_CLOUDFLARE_API_KEY + INPUT_CLOUDFLARE_ACCOUNT_ID)
+#
+# This job builds and runs the bot from the checkout it is in, so it belongs in
+# a fork or vendored copy of this repo, not a remote `include:` from your own
+# project (that would resolve dist/index.mjs against your checkout). If you do
+# `include:` it locally, note that triage is the only job here and its rule
+# excludes push/MR pipelines, so a standalone copy reports "No stages / jobs".
+
+triage:
+  image: node:22
+  timeout: 30 minutes
+  # Job-level, not workflow-level: a top-level workflow:rules block would
+  # disable push/MR/scheduled pipelines for the whole project adopting this.
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+  # GitHub keys concurrency on the issue number. The webhook URL is static, so
+  # no per-event variable can reach us and the issue number lives inside the
+  # payload file — which resource_group cannot read.
+  # ponytail: project-wide serialization; add a relay that forwards
+  # object_attributes.iid as a trigger variable if queueing gets too slow.
+  resource_group: triage
+  variables:
+    GIT_DEPTH: 0
+    GITHUB_EVENT_PATH: $TRIGGER_PAYLOAD
+    GITLAB_HOST: $CI_SERVER_URL
+    INPUT_TRIAGE_SKILL: .agents/skills/triage
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+    GLAB_VERSION: '1.112.0'
+  before_script:
+    # The bot and the triage agent both shell out to glab.
+    - curl -sSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_amd64.tar.gz"
+      | tar -xz -C /usr/local bin/glab
+    - git config user.name "triagebot"
+    - git config user.email "triagebot@users.noreply.gitlab.com"
+    - corepack enable
+    - pnpm install --frozen-lockfile
+    - pnpm build
+  script:
+    - node dist/index.mjs

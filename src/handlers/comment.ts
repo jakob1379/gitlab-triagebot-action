@@ -8,7 +8,7 @@
 
 import type { FlueSession } from '@flue/runtime';
 import * as v from 'valibot';
-import type { IssueDetails, RepoLabel } from '../github.ts';
+import { compareUrl, type IssueDetails, type RepoLabel } from '../forge.ts';
 
 interface CommentArgs {
 	branchName: string | null;
@@ -55,7 +55,7 @@ The comment must start with an at-a-glance summary, followed by short explanatio
 
 \`\`\`markdown
 - **Reproduced:** [Yes / No / Skipped — reason]
-- **Exploration:** [Yes / No / Partial / Already fixed on main] [If branchName is non-null: — [View branch](https://github.com/{repo}/compare/{branchName}?expand=1)]
+- **Exploration:** [Yes / No / Partial / Already fixed on main] [If branchName is non-null: — [View branch]({compareUrl})]
 - **Unit Test:** [Yes — path/to/test.test.ts / No — reason]
 - **Priority:** [See Priority Instructions above]
 
@@ -94,6 +94,7 @@ export async function generateComment(session: FlueSession, args: CommentArgs): 
 
 - **Issue:** #${args.issueDetails.number} — ${args.issueDetails.title}
 - **Branch:** ${args.branchName ?? '(none)'}
+- **compareUrl:** ${args.branchName ? compareUrl(args.repo, args.branchName) : '(none)'}
 - **Repo:** ${args.repo}
 - **Preview Release:** ${args.previewRelease ? args.previewRelease.urls.join(', ') : '(none)'}
 

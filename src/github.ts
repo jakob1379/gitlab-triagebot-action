@@ -3,12 +3,8 @@
  * controls whether a read or write token is used.
  */
 
-import { exec as execCb, execFile as execFileCb } from 'node:child_process';
-import { promisify } from 'node:util';
 import * as v from 'valibot';
-
-const execAsync = promisify(execCb);
-const execFileAsync = promisify(execFileCb);
+import { type GitResult, push } from './git.ts';
 
 function headers(token: string): Record<string, string> {
 	return {
@@ -117,6 +113,14 @@ export async function fetchRepoLabels(
 		page++;
 	}
 
+	return splitRepoLabels(allLabels);
+}
+
+/** Partition repo labels into the two groups the triage prompt offers. */
+export function splitRepoLabels(allLabels: RepoLabel[]): {
+	priorityLabels: RepoLabel[];
+	packageLabels: RepoLabel[];
+} {
 	return {
 		priorityLabels: allLabels.filter((l) => /^- P\d/.test(l.name)),
 		packageLabels: allLabels.filter((l) => l.name.startsWith('pkg:')),
@@ -138,6 +142,13 @@ export async function addLabels(
 		throw new Error(`Failed to add labels (HTTP ${res.status}): ${await res.text()}`);
 	}
 }
+
+/**
+ * On GitHub, pull requests are issues and share one number sequence, so
+ * labelling one is the same call. GitLab gives merge requests their own iid
+ * and needs a distinct implementation.
+ */
+export const addPullRequestLabels = addLabels;
 
 export async function removeLabel(
 	repo: string,
@@ -278,40 +289,11 @@ export async function deleteBranch(repo: string, branch: string, token: string):
 	}
 }
 
-/**
- * Stage all changes and create a commit. Runs outside the sandbox and passes
- * the commit message as an argv argument (never a shell string), so backticks,
- * parentheses, quotes, and newlines in an LLM-authored message can't be
- * interpreted by the shell or break the command.
- */
-export async function gitCommit(
-	message: string,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	try {
-		await execFileAsync('git', ['add', '-A']);
-		const { stdout, stderr } = await execFileAsync('git', ['commit', '-m', message]);
-		return { exitCode: 0, stdout, stderr };
-	} catch (err: any) {
-		return { exitCode: err.code ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
-	}
-}
-
-/**
- * Push a branch to origin. Runs outside any sandbox so the write token
- * is never exposed to the LLM agent.
- */
-export async function gitPush(
+export function gitPush(
 	repo: string,
 	branch: string,
 	token: string,
 	options?: { force?: boolean },
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-	const forceFlag = options?.force ? ' -f' : '';
-	const remoteUrl = `https://x-access-token:${token}@github.com/${repo}.git`;
-	try {
-		const { stdout, stderr } = await execAsync(`git push${forceFlag} ${remoteUrl} ${branch}`);
-		return { exitCode: 0, stdout, stderr };
-	} catch (err: any) {
-		return { exitCode: err.code ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
-	}
+): Promise<GitResult> {
+	return push(`https://x-access-token:${token}@github.com/${repo}.git`, branch, options);
 }

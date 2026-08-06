@@ -14,7 +14,10 @@ import type { ActionContext } from '../context.ts';
 import { createSession } from '../flue.ts';
 import {
 	addLabels,
+	addPullRequestLabels,
+	agentEnv,
 	createPullRequest,
+	defaultBranch,
 	fetchIssueDetails,
 	fetchRepoLabels,
 	findPullRequest,
@@ -25,7 +28,7 @@ import {
 	postComment,
 	type RepoLabel,
 	swapLabel,
-} from '../github.ts';
+} from '../forge.ts';
 import { currentTriageLabel } from '../labels.ts';
 import { generatePRContent } from '../pr.ts';
 import { generateComment } from './comment.ts';
@@ -58,11 +61,18 @@ function packageDirsFromChangedFiles(changedFiles: string[]): string[] {
 	return [...packageDirs];
 }
 
-async function publishPreviewRelease(session: FlueSession): Promise<PreviewRelease | null> {
+async function publishPreviewRelease(
+	session: FlueSession,
+	baseSha: string,
+): Promise<PreviewRelease | null> {
 	console.info('Preview release: checking changed package directories.');
-	const diffResult = await session.shell('git diff main --name-only');
+	const diffResult = await session.shell(`git diff ${baseSha} --name-only`);
+	if (diffResult.exitCode !== 0) {
+		console.warn('Preview release skipped: git diff failed:', diffResult.stderr);
+		return null;
+	}
 	if (!diffResult.stdout.trim()) {
-		console.info('Preview release skipped: no changed files relative to main.');
+		console.info('Preview release skipped: no changed files since triage started.');
 		return null;
 	}
 
@@ -316,6 +326,8 @@ export function countTriageFailures(issueDetails: IssueDetails): number {
 }
 
 function currentRunUrl(ctx: ActionContext): string | null {
+	// GitLab hands us the full pipeline URL directly.
+	if (process.env.CI_PIPELINE_URL) return process.env.CI_PIPELINE_URL;
 	const runId = process.env.GITHUB_RUN_ID;
 	if (!runId) return null;
 	const serverUrl = process.env.GITHUB_SERVER_URL || 'https://github.com';
@@ -394,7 +406,7 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 	const agent = createAgent(() => ({
 		sandbox: local({
 			env: {
-				GH_TOKEN: ctx.readToken,
+				...agentEnv(ctx.readToken),
 				GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
 				GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
 				GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
@@ -411,6 +423,12 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	const session = await createSession(agent);
 
+	// Baseline for "what did the agent change". Must be a commit, not a branch
+	// name: GitLab CI checks out a detached HEAD with no local branch refs, so
+	// `git diff main` is a fatal error there and would silently look like an
+	// empty diff.
+	const baseSha = (await session.shell('git rev-parse HEAD')).stdout.trim();
+
 	// Create the fix branch so the agent's changes don't land on main.
 	// This is needed for both initial triage and retriage.
 	await session.shell(`git checkout -B ${JSON.stringify(branch)}`);
@@ -422,7 +440,7 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	// Push fix branch if there are changes.
 	{
-		const diff = await session.shell('git diff main --stat');
+		const diff = await session.shell(`git diff ${baseSha} --stat`);
 		console.info(`Triage diff stat present: ${Boolean(diff.stdout.trim())}`);
 		if (diff.stdout.trim()) {
 			const status = await session.shell('git status --porcelain');
@@ -464,14 +482,19 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 				);
 				openedPr = await createPullRequest(
 					ctx.repo,
-					{ head: branch, base: 'main', title: prContent.title, body: prContent.body },
+					{ head: branch, base: defaultBranch, title: prContent.title, body: prContent.body },
 					ctx.writeToken,
 				);
 				console.info(`Auto-PR created: ${openedPr.html_url}`);
-				await addLabels(ctx.repo, openedPr.number, [ctx.labels.prFixVerified], ctx.writeToken);
+				await addPullRequestLabels(
+					ctx.repo,
+					openedPr.number,
+					[ctx.labels.prFixVerified],
+					ctx.writeToken,
+				);
 			}
 		} else {
-			previewRelease = await publishPreviewRelease(session);
+			previewRelease = await publishPreviewRelease(session, baseSha);
 			if (previewRelease) {
 				console.info('Preview release published:', previewRelease.urls);
 			} else {

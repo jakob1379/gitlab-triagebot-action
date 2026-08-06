@@ -1,6 +1,8 @@
 # triagebot-action
 
-AI-powered issue triage bot for GitHub repositories. Uses a label-driven state machine to automatically reproduce bugs, diagnose root causes, attempt fixes, and verify them with reporters.
+AI-powered issue triage bot for GitHub and GitLab repositories. Uses a label-driven state machine to automatically reproduce bugs, diagnose root causes, attempt fixes, and verify them with reporters.
+
+Runs as a GitHub Action, or as a GitLab CI job via [`.gitlab-ci.yml`](.gitlab-ci.yml) — see [GitLab CI](#gitlab-ci).
 
 ## How it works
 
@@ -8,7 +10,7 @@ When an issue is opened, the bot adds a triage label and runs an AI agent throug
 
 Repositories that can't publish preview releases (or that prefer to skip the confirmation step) can set `auto-pr-on-fix: true` to open the PR immediately once a fix is pushed, moving the issue straight to `fix verified`.
 
-The entire flow is driven by a finite state machine encoded as GitHub labels. Each issue has exactly one triage label at any time, and transitions happen automatically based on events and AI classification.
+The entire flow is driven by a finite state machine encoded as issue labels. Each issue has exactly one triage label at any time, and transitions happen automatically based on events and AI classification.
 
 ### State Machine
 
@@ -80,6 +82,8 @@ All label names are customizable via action inputs.
 - `triage: skipped`
 
 ## Setup
+
+These steps cover GitHub Actions. On GitLab, step 1 is replaced by [GitLab CI](#gitlab-ci) below; steps 2 and 3 apply to both.
 
 ### 1. Create a workflow
 
@@ -169,6 +173,47 @@ Workers AI is called over its OpenAI-compatible REST endpoint, so the action sti
           triage-skill: .agents/skills/triage
 ```
 
+## GitLab CI
+
+The bot runs on GitLab through [`.gitlab-ci.yml`](.gitlab-ci.yml), talking to the GitLab API via the [`glab`](https://gitlab.com/gitlab-org/cli) CLI, which the job installs. Triage skills (step 2 above) are identical on both forges.
+
+Because the job builds and runs the bot from its own checkout, **use a fork or vendored copy of this repo** — a remote `include:` from your project would resolve `dist/index.mjs` against your checkout and fail.
+
+### 1. Wire the webhook
+
+GitLab has no issue-event pipeline source, but it does not need an external webhook receiver either: a project webhook can POST straight at the pipeline trigger endpoint, as long as the ref is in the URL.
+
+Under **Settings → Webhooks**, add a hook with the **Issues events** and **Comments events** triggers and this URL:
+
+```
+https://gitlab.example.com/api/v4/projects/<id>/ref/main/trigger/pipeline?token=<trigger_token>
+```
+
+The ref in the URL takes precedence over the payload, and GitLab exposes the full webhook body to the job as `$TRIGGER_PAYLOAD` — a *file path*, which is what the bot reads the event from.
+
+`CI_PIPELINE_SOURCE` is `trigger`, not anything issue-specific, so `rules:` cannot gate on the event type (the payload is a file, which `rules:` cannot read). Gating happens in-job: the router skips merge request comments, and the bot resolves its own token username so it ignores the comments it posts itself.
+
+### 2. Set the CI/CD variables
+
+Inputs are read from the environment as `INPUT_*`, so masked CI/CD variables are all that is needed — there is no `with:` block to fill in.
+
+| Variable | Notes |
+|----------|-------|
+| `INPUT_READ_TOKEN` | Project access token, `read_api` + `read_repository` (the fix-branch lookup uses git) |
+| `INPUT_WRITE_TOKEN` | Project access token, `api` + `write_repository`. **`CI_JOB_TOKEN` cannot write issues**, so it will not do |
+| `INPUT_ANTHROPIC_API_KEY` | Or `INPUT_CLOUDFLARE_API_KEY` + `INPUT_CLOUDFLARE_ACCOUNT_ID` |
+
+Any other input from the [Inputs](#inputs) table works the same way: `triage-model` becomes `INPUT_TRIAGE_MODEL`. The required `triage-skill` input is already set in the job file as `INPUT_TRIAGE_SKILL: .agents/skills/triage` — change it there if your skills live elsewhere.
+
+### Differences from GitHub
+
+| | GitHub | GitLab |
+|---|--------|--------|
+| Concurrency | One run per issue (`concurrency.group`) | Project-wide (`resource_group`) — the issue number lives inside the payload file, which `resource_group` cannot read |
+| Bot identity | `github-actions[bot]`, a known constant | Resolved at runtime via `glab api user`; a project access token posts as `project_<id>_bot_<hash>` |
+| Comment author association | `MEMBER` / `COLLABORATOR` / `OWNER` | Not exposed by GitLab, so any skill logic keyed on it never fires |
+| Minimum version | — | GitLab 16.11+, for `object_attributes.action` on note hooks |
+
 ## Inputs
 
 | Input | Required | Default | Description |
@@ -210,7 +255,7 @@ All labels are customizable. These are the defaults:
 
 The action has two layers:
 
-**Action-owned** — the state machine, GitHub API interactions, and LLM calls that drive the workflow:
+**Action-owned** — the state machine, forge API interactions, and LLM calls that drive the workflow:
 - FSM routing based on event type and current label
 - Re-triage evaluation (is there new actionable information?)
 - Fix verification (did the reporter confirm the fix?)
@@ -222,15 +267,50 @@ The action has two layers:
 - **Triage skills** (required) — how to reproduce, diagnose, verify, and fix bugs
 - **PR writer skill** (optional) — how to format PR titles and bodies for your project
 
-The action invokes project skills via [Flue](https://github.com/anthropics/flue), an agent orchestration framework. The AI agent runs shell commands on the GitHub Actions runner to build, test, and debug the project.
+The action invokes project skills via [Flue](https://github.com/anthropics/flue), an agent orchestration framework. The AI agent runs shell commands on the CI runner to build, test, and debug the project.
+
+**Forge layer** — `src/forge.ts` picks a backend off `GITLAB_CI` and re-exports one set of functions, so handlers never know which forge they are on:
+
+- `src/github.ts` — GitHub REST over `fetch`
+- `src/gitlab.ts` — GitLab via `glab` subcommands
+- `src/git.ts` — plain git shared by both
+- `src/gitlab-event.ts` — GitLab webhook payload → the event the router expects
 
 ## Development
 
 ```bash
 pnpm install
-pnpm test          # Unit tests (router, labels)
+pnpm test          # Unit tests (router, labels, forge argv, event adapter)
 pnpm test:evals    # LLM eval tests (requires ANTHROPIC_API_KEY)
 pnpm build         # Bundle to dist/
 pnpm lint          # Biome check
 pnpm format        # Biome format
 ```
+
+### Running the pipelines locally
+
+[`flake.nix`](flake.nix) provides `act`, `gitlab-ci-local`, `glab`, node and pnpm:
+
+```bash
+nix develop
+```
+
+An event payload that routes to `skip` exercises install → build → event parsing → routing without any LLM or API calls:
+
+```bash
+# GitHub
+act issue_comment -W .github/workflows/triage.yml -e event.json \
+  -s GITHUB_TOKEN=… -s FREDKBOT_GITHUB_TOKEN=… -s CI_ANTHROPIC_API_KEY=…
+
+# GitLab — TRIGGER_PAYLOAD is a path to a GitLab webhook body.
+# gitlab-ci-local only copies git-known files into the job, so the payload
+# must be tracked or staged.
+gitlab-ci-local triage \
+  --variable CI_PIPELINE_SOURCE=trigger --variable GITLAB_CI=true \
+  --variable CI_PROJECT_PATH=group/project \
+  --variable TRIGGER_PAYLOAD='$CI_PROJECT_DIR/trigger-payload.json' \
+  --variable INPUT_READ_TOKEN=… --variable INPUT_WRITE_TOKEN=… \
+  --variable INPUT_ANTHROPIC_API_KEY=…
+```
+
+`gitlab-ci-local` sets `GITLAB_CI=false` since it is not real GitLab CI, hence the explicit override.

@@ -62,7 +62,7 @@ Skip if the bug is specific to a runtime not available in CI. Our sandbox only s
 
 ### Maintainer Override (`maintainer-override`)
 
-Skip if a maintainer (check `authorAssociation` for `MEMBER`, `COLLABORATOR`, or `OWNER`) has commented that this issue should not be auto-triaged.
+Skip if a maintainer (check `authorAssociation` (GitHub only — GitLab notes carry no association, so this check never fires there) for `MEMBER`, `COLLABORATOR`, or `OWNER`) has commented that this issue should not be auto-triaged.
 
 ## Step 3: Set Up Reproduction Project
 

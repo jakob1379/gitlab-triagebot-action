@@ -54,10 +54,17 @@ Run `git blame` on relevant lines. Read the full commit message with `git show -
 ### Search Prior Issues and PRs
 
 ```bash
+# GitHub
 gh search issues "<keywords>"
 gh search prs "<keywords>"
 gh issue view <number> --comments
 gh pr view <number> --comments
+
+# GitLab
+glab issue list --search "<keywords>"
+glab mr list --search "<keywords>"
+glab issue view <number> --comments
+glab mr view <number> --comments
 ```
 
 If you find a closed issue where a maintainer explained why the behavior is intentional, that is strong evidence.

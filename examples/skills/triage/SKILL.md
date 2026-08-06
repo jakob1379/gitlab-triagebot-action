@@ -16,7 +16,7 @@ Triage a bug report end-to-end: reproduce the bug, diagnose the root cause, veri
 You need either:
 
 - `issueTitle` and `issueBody` provided in args (preferred — use these directly as the bug report), OR
-- A GitHub issue number or URL mentioned in the conversation (use `gh issue view` to fetch details)
+- An issue number or URL mentioned in the conversation (use `gh issue view`, or `glab issue view` on GitLab, to fetch details)
 
 If a `triageDir` is provided in args, use that as the working directory for the triage. Otherwise, default to `triage/gh-<issue_number>` (if you have an issue number) or `triage/current`.
 
