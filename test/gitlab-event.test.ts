@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import { parseGitLabEvent } from '../src/gitlab-event.ts';
 import { labelConfigFromInputs } from '../src/labels.ts';
 import { route } from '../src/router.ts';
@@ -97,7 +97,31 @@ describe('parseGitLabEvent', () => {
 describe('compareUrl', () => {
 	// The bot renders this into every triage comment that produced a fix branch,
 	// so a github.com link on GitLab is a dead link in user-facing output.
-	it('uses GitLab compare syntax on GitLab', async () => {
+	//
+	// Real GitLab CI always sets both of these, so pin them instead of asserting
+	// against whatever the ambient environment carries: a runner that derives
+	// CI_SERVER_URL from the git remote would otherwise turn the assertion below
+	// into a test of the dev machine. CI_DEFAULT_BRANCH is set here rather than
+	// per-test because forge.ts reads it once, at module load.
+	process.env.CI_DEFAULT_BRANCH = 'main';
+
+	const originalServerUrl = process.env.CI_SERVER_URL;
+	afterEach(() => {
+		if (originalServerUrl === undefined) delete process.env.CI_SERVER_URL;
+		else process.env.CI_SERVER_URL = originalServerUrl;
+	});
+
+	it('points at the GitLab instance the job runs on', async () => {
+		process.env.CI_SERVER_URL = 'https://gitlab.example.com';
+		const { compareUrl } = await import('../src/forge.ts');
+		assert.equal(
+			compareUrl('grp/proj', 'triagebot/fix-17', true),
+			'https://gitlab.example.com/grp/proj/-/compare/main...triagebot%2Ffix-17',
+		);
+	});
+
+	it('falls back to gitlab.com when CI_SERVER_URL is unset', async () => {
+		delete process.env.CI_SERVER_URL;
 		const { compareUrl } = await import('../src/forge.ts');
 		assert.equal(
 			compareUrl('grp/proj', 'triagebot/fix-17', true),

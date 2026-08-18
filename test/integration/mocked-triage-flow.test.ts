@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import type { ActionContext } from '../../src/context.ts';
+import { defaultBranch } from '../../src/forge.ts';
 import { handleTriage } from '../../src/handlers/triage.ts';
 import { labelConfigFromInputs } from '../../src/labels.ts';
 
@@ -459,9 +460,12 @@ describe('mocked triage flow', () => {
 
 		// PR content generated, then comment, then label selection: 7 LLM calls.
 		assert.equal(anthropicCalls, 7);
-		// A PR was opened directly from the fix branch against main.
+		// A PR was opened directly from the fix branch against the default branch.
+		// Not the literal "main": forge.ts resolves this from CI_DEFAULT_BRANCH,
+		// which real GitLab CI always sets, so hardcoding it here would assert
+		// against the environment rather than the wiring.
 		assert.equal(createdPrHead, 'triagebot/fix-123');
-		assert.equal(createdPrBase, 'main');
+		assert.equal(createdPrBase, defaultBranch);
 		// The PR got the fix-verified PR label.
 		assert.deepEqual(prLabels, [['fix verified']]);
 		// The issue moved straight to fix verified (no preview => not fix pending).
