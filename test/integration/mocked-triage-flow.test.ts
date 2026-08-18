@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import type { ActionContext } from '../../src/context.ts';
-import { defaultBranch } from '../../src/gitlab.ts';
 import { handleTriage } from '../../src/handlers/triage.ts';
 import { labelConfigFromInputs } from '../../src/labels.ts';
 import { type GlabRoute, type GlabStub, ndjson, stubGlab } from '../helpers/glab-stub.ts';
@@ -15,6 +14,7 @@ const originalFetch = globalThis.fetch;
 const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
 const originalPath = process.env.PATH;
 const originalServerUrl = process.env.CI_SERVER_URL;
+const originalDefaultBranch = process.env.CI_DEFAULT_BRANCH;
 let tempDir: string | null = null;
 let glab: GlabStub | null = null;
 
@@ -25,6 +25,8 @@ afterEach(() => {
 	else process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
 	if (originalServerUrl === undefined) delete process.env.CI_SERVER_URL;
 	else process.env.CI_SERVER_URL = originalServerUrl;
+	if (originalDefaultBranch === undefined) delete process.env.CI_DEFAULT_BRANCH;
+	else process.env.CI_DEFAULT_BRANCH = originalDefaultBranch;
 	glab?.restore();
 	glab = null;
 	if (originalPath === undefined) delete process.env.PATH;
@@ -320,6 +322,9 @@ describe('mocked triage flow', () => {
 	it('opens a merge request directly and marks fix verified when auto-pr-on-fix is enabled', async () => {
 		const triageSkill = setupRepo();
 		configureLocalPushRemote();
+		// Not "main": pinning it to something the fallback would never produce is
+		// what makes the --target-branch assertion below test the wiring.
+		process.env.CI_DEFAULT_BRANCH = 'trunk';
 		glab = stubGlab([
 			...baseRoutes(),
 			{
@@ -377,14 +382,12 @@ describe('mocked triage flow', () => {
 		// MR content generated, then comment, then label selection: 7 LLM calls.
 		assert.equal(anthropicCalls, 7);
 
-		// An MR was opened directly from the fix branch against the default branch.
-		// Not the literal "main": gitlab.ts resolves this from CI_DEFAULT_BRANCH,
-		// which real GitLab CI always sets, so hardcoding it here would assert
-		// against the environment rather than the wiring.
+		// An MR was opened directly from the fix branch against the default branch,
+		// which gitlab.ts resolves from CI_DEFAULT_BRANCH.
 		const create = glab.calls().find((c) => c.startsWith('mr create'));
 		assert.ok(create, 'expected an mr create call');
 		assert.match(create, /--source-branch triagebot\/fix-123\b/);
-		assert.match(create, new RegExp(`--target-branch ${defaultBranch}\\b`));
+		assert.match(create, /--target-branch trunk\b/);
 
 		// The MR got the fix-verified label, on `mr update` rather than
 		// `issue update` — merge requests have their own iid sequence.

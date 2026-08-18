@@ -32,18 +32,22 @@ afterEach(() => {
  * on PATH. The stub answers `api user` and fails everything else, so a case that
  * routes to a handler stops at its first forge read instead of calling out.
  */
-function runGitLabJob(payload: unknown) {
+function runGitLabJob(payload: unknown, opts: { identityResolves?: boolean } = {}) {
 	tempDir = mkdtempSync(join(tmpdir(), 'triagebot-gitlab-'));
 	const eventPath = join(tempDir, 'event.json');
 	writeFileSync(eventPath, JSON.stringify(payload));
 
 	const bin = join(tempDir, 'glab');
+	const identity =
+		opts.identityResolves === false
+			? '  "api user") echo "stub glab: api user unavailable" >&2; exit 1 ;;'
+			: `  "api user") printf '%s' '{"username":"${BOT_USERNAME}"}' ;;`;
 	writeFileSync(
 		bin,
 		[
 			'#!/bin/sh',
 			'case "$*" in',
-			`  "api user") printf '%s' '{"username":"${BOT_USERNAME}"}' ;;`,
+			identity,
 			'  *) echo "stub glab: refusing $*" >&2; exit 1 ;;',
 			'esac',
 		].join('\n'),
@@ -83,6 +87,27 @@ describe('gitlab entrypoint', () => {
 
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /Skipping: Comment from bot \(project_1_bot_abc\)/);
+	});
+
+	it('refuses to run when it cannot resolve its own username', () => {
+		// Failing open here is not a warning-level problem. verify-fix treats "the
+		// latest comment not from a bot" as the reporter's verdict, so an
+		// unrecognised self would make the bot read its own triage report — which
+		// describes a working fix — as a confirmation, and open a merge request
+		// nobody asked for.
+		const result = runGitLabJob(
+			{
+				object_kind: 'note',
+				user: { username: BOT_USERNAME },
+				object_attributes: { action: 'create', noteable_type: 'Issue' },
+				issue: { iid: 17, labels: [{ title: 'triage: fix pending' }] },
+			},
+			{ identityResolves: false },
+		);
+
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /Could not resolve the bot username/);
+		assert.doesNotMatch(result.stdout, /Router decision/);
 	});
 
 	it('drops merge request comments before they reach the router', () => {

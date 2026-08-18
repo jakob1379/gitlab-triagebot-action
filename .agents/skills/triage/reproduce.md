@@ -8,7 +8,7 @@ Reproduce a GitLab issue to determine if a bug is valid and reproducible.
 
 ## Prerequisites
 
-- **`triageDir`** — Working directory for the triage (default: `triage/gh-<issue_number>`).
+- **`triageDir`** — Working directory for the triage (default: `triage/issue-<issue_number>`).
 - **`issueDetails`** — The GitLab API issue details payload.
 
 ## Step 1: Confirm Bug Details
@@ -31,7 +31,11 @@ Skip if missing a reproduction or expected behavior description.
 
 ### Maintainer Override (`maintainer-override`)
 
-Skip if a maintainer (`authorAssociation` of `MEMBER`, `COLLABORATOR`, or `OWNER`) has said not to auto-triage.
+Skip if a maintainer has commented that this issue should not be auto-triaged.
+
+<!-- NOTE: GitLab notes carry no author association, so `issueDetails` reports
+     every commenter as `NONE`. Identify maintainers another way — by username,
+     or with `glab api projects/:id/members/all`. -->
 
 ## Step 3: Set Up Reproduction
 

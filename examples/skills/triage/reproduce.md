@@ -8,7 +8,7 @@ Reproduce a GitLab issue to determine if a bug is valid and reproducible.
 
 ## Prerequisites
 
-- **`triageDir`** — Directory containing the reproduction project (e.g. `triage/issue-123`). If not passed as an arg, default to `triage/gh-<issue_number>`.
+- **`triageDir`** — Directory containing the reproduction project (e.g. `triage/issue-123`). If not passed as an arg, default to `triage/issue-<issue_number>`.
 - **`issueDetails`** — The GitLab API issue details payload.
 
 ## Overview

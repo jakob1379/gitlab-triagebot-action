@@ -20,7 +20,7 @@ You need either:
 - `issueTitle` and `issueBody` provided in args, OR
 - An issue number or URL (use `glab issue view` to fetch details)
 
-If a `triageDir` is provided in args, use that as the working directory. Otherwise, default to `triage/gh-<issue_number>`.
+If a `triageDir` is provided in args, use that as the working directory. Otherwise, default to `triage/issue-<issue_number>`.
 
 ## Step 1: Reproduce
 

@@ -146,6 +146,7 @@ digits and underscores, so a hyphenated input name maps to its underscored form:
 | `INPUT_READ_TOKEN` | Project access token, `read_api` + `read_repository` (the fix-branch lookup uses git) |
 | `INPUT_WRITE_TOKEN` | Project access token, `api` + `write_repository`. **`CI_JOB_TOKEN` cannot write issues**, so it will not do |
 | `INPUT_ANTHROPIC_API_KEY` | Or `INPUT_CLOUDFLARE_API_KEY` + `INPUT_CLOUDFLARE_ACCOUNT_ID` |
+| `INPUT_BOT_LOGINS` | Optional. Other bots whose comments should not trigger triage, comma-separated |
 
 The required `triage-skill` input is already set in the job file as
 `INPUT_TRIAGE_SKILL: .agents/skills/triage` — change it there if your skills live
@@ -174,7 +175,9 @@ INPUT_VERIFICATION_MODEL     = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
 - **Concurrency is project-wide** (`resource_group`), not per issue. The issue number
   lives inside the payload file, which `resource_group` cannot read.
 - **Bot identity is resolved at runtime** via `glab api user`, because a project access
-  token posts as `project_<id>_bot_<hash>` — a name nothing can hardcode.
+  token posts as `project_<id>_bot_<hash>` — a name nothing can hardcode. The job fails
+  if that lookup fails: without its own name the bot cannot tell its comments from a
+  reporter's, and would read its own triage report as the reporter confirming the fix.
 - **Notes carry no author association.** `issueDetails` reports every commenter as
   `NONE`, so skill logic keyed on `MEMBER` / `COLLABORATOR` / `OWNER` never fires.
 
@@ -191,7 +194,7 @@ INPUT_VERIFICATION_MODEL     = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
 | `triage-skill` | Yes | | Path to triage skill directory (`SKILL.md`, `reproduce.md`, etc.) |
 | `pr-skill` | No | | Path to merge request writer skill directory. If not provided, uses a built-in prompt. |
 | `auto-pr-on-fix` | No | `false` | When `true`, open a merge request immediately after triage finds and pushes a fix, skipping the preview/confirmation flow. |
-| `bot-logins` | No | | Comma-separated list of extra bot usernames whose comments should be ignored. The bot's own username is resolved at runtime and always included. |
+| `bot-logins` | No | | Comma-separated list of *other* bot usernames whose comments should be ignored. The bot's own username is resolved at runtime and always added; it does not need to be listed here. |
 | `build-command` | No | | Command to build the project before triage |
 | `triage-model` | No | `anthropic/claude-opus-4-6` | Model for the triage pipeline (`provider/model-id`, e.g. `cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code`) |
 | `verification-model` | No | `anthropic/claude-sonnet-4-6` | Model for fix verification and retriage checks |

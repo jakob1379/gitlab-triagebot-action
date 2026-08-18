@@ -49,9 +49,10 @@ const routes = JSON.parse(fs.readFileSync(path.join(__dirname, 'routes.json'), '
 for (let i = 0; i < routes.length; i++) {
   const route = routes[i];
   if (!new RegExp(route.match).test(argv)) continue;
-  // One append-only file per route rather than a shared counter: the bot issues
-  // some reads concurrently, and a read-modify-write of one file would drop
-  // ticks. O_APPEND keeps each tick atomic.
+  // One file per route rather than a shared counter, so concurrent calls on
+  // *different* routes cannot clobber each other's tally. Two concurrent calls
+  // on the same route would still both read the same index; no queued route is
+  // used that way, and a route with a single reply does not care.
   const countFile = path.join(__dirname, 'count-' + i);
   let seen = 0;
   try {

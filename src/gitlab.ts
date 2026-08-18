@@ -52,8 +52,16 @@ export interface PullRequest {
 	html_url: string;
 }
 
-/** Branch fix MRs target. GitLab projects are not all called "main". */
-export const defaultBranch = process.env.CI_DEFAULT_BRANCH || 'main';
+/**
+ * Branch fix MRs target. GitLab projects are not all called "main".
+ *
+ * Read lazily, like serverUrl below: as a module-level const its value would
+ * depend on whether something imported this module before the environment was
+ * set, which is a trap for tests and for any non-CI caller.
+ */
+export function defaultBranch(): string {
+	return process.env.CI_DEFAULT_BRANCH || 'main';
+}
 
 /** The GitLab instance this job is running against. */
 function serverUrl(): string {
@@ -64,7 +72,7 @@ function serverUrl(): string {
 
 /** Link a fix branch back to GitLab's compare view. */
 export function compareUrl(repo: string, branch: string): string {
-	return `${serverUrl()}/${repo}/-/compare/${defaultBranch}...${encodeURIComponent(branch)}`;
+	return `${serverUrl()}/${repo}/-/compare/${defaultBranch()}...${encodeURIComponent(branch)}`;
 }
 
 /**
@@ -96,7 +104,9 @@ function splitRepoLabels(allLabels: RepoLabel[]): {
 async function glab(args: string[], token: string): Promise<string> {
 	try {
 		const { stdout } = await execFileAsync('glab', args, {
-			env: { ...process.env, GITLAB_TOKEN: token },
+			// GITLAB_HOST too: .gitlab-ci.yml sets it, but deriving it here from the
+			// same variable serverUrl() uses keeps the module usable on its own.
+			env: { ...process.env, GITLAB_TOKEN: token, GITLAB_HOST: serverUrl() },
 			maxBuffer: 32 * 1024 * 1024,
 		});
 		return stdout;
@@ -256,15 +266,6 @@ export async function addPullRequestLabels(
 	);
 }
 
-export async function removeLabel(
-	repo: string,
-	issueNumber: number,
-	label: string,
-	token: string,
-): Promise<void> {
-	await glab(['issue', 'update', String(issueNumber), '--unlabel', label, '--repo', repo], token);
-}
-
 /**
  * Swap one triage label for another. One request, so the issue is never briefly
  * left with neither label.
@@ -352,7 +353,8 @@ export async function findBranch(
 	const url = remoteUrl(repo, token);
 	try {
 		const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', url, ...branches]);
-		return branches.find((b) => stdout.includes(`refs/heads/${b}`)) ?? null;
+		const refs = new Set(stdout.split('\n').map((line) => line.split('\t')[1]));
+		return branches.find((b) => refs.has(`refs/heads/${b}`)) ?? null;
 	} catch (err: any) {
 		throw new Error(redactRemote(err.stderr || err.message));
 	}

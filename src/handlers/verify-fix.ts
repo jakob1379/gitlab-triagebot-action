@@ -70,11 +70,11 @@ ${issueDetails.body}
 ## Recent conversation
 ${issueDetails.comments
 	.slice(-10)
-	.map((c) => `**@${c.author.login}** (${c.authorAssociation}):\n${c.body}`)
+	.map((c) => `**@${c.author.login}**:\n${c.body}`)
 	.join('\n\n---\n\n')}
 
 ## Comment to classify
-**@${latestUserComment.author.login}** (${latestUserComment.authorAssociation}):
+**@${latestUserComment.author.login}**:
 ${latestUserComment.body}
 
 ## Your Task
@@ -164,7 +164,7 @@ Return your classification.`,
 
 	const pr = await createPullRequest(
 		ctx.repo,
-		{ head: branch, base: defaultBranch, title: prContent.title, body: prContent.body },
+		{ head: branch, base: defaultBranch(), title: prContent.title, body: prContent.body },
 		ctx.writeToken,
 	);
 

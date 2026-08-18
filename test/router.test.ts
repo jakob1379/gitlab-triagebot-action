@@ -24,7 +24,7 @@ function event(overrides: Partial<TriageEvent>): TriageEvent {
 		isPullRequest: false,
 		issueNumber: 42,
 		issueLabels: [],
-		botLogins: ['github-actions[bot]', 'astrobot-houston'],
+		botLogins: ['project_1_bot_abc', 'astrobot-houston'],
 		...overrides,
 	};
 }
@@ -119,7 +119,7 @@ describe('router', () => {
 			event({
 				action: 'created',
 				issueLabels: ['triage: fix pending'],
-				commentAuthor: 'github-actions[bot]',
+				commentAuthor: 'project_1_bot_abc',
 			}),
 			labels,
 		);

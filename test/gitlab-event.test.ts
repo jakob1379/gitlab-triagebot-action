@@ -99,28 +99,32 @@ describe('compareUrl', () => {
 	//
 	// Real GitLab CI always sets both of these, so pin them instead of asserting
 	// against whatever the ambient environment carries: a runner that derives
-	// CI_SERVER_URL from the git remote would otherwise turn the assertion below
-	// into a test of the dev machine. CI_DEFAULT_BRANCH is set here rather than
-	// per-test because gitlab.ts reads it once, at module load.
-	process.env.CI_DEFAULT_BRANCH = 'main';
-
-	const originalServerUrl = process.env.CI_SERVER_URL;
+	// CI_SERVER_URL from the git remote would otherwise turn the assertions below
+	// into a test of the dev machine.
+	const original = { url: process.env.CI_SERVER_URL, branch: process.env.CI_DEFAULT_BRANCH };
 	afterEach(() => {
-		if (originalServerUrl === undefined) delete process.env.CI_SERVER_URL;
-		else process.env.CI_SERVER_URL = originalServerUrl;
+		for (const [key, value] of [
+			['CI_SERVER_URL', original.url],
+			['CI_DEFAULT_BRANCH', original.branch],
+		] as const) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 	});
 
 	it('points at the GitLab instance the job runs on', async () => {
 		process.env.CI_SERVER_URL = 'https://gitlab.example.com';
+		process.env.CI_DEFAULT_BRANCH = 'trunk';
 		const { compareUrl } = await import('../src/gitlab.ts');
 		assert.equal(
 			compareUrl('grp/proj', 'triagebot/fix-17'),
-			'https://gitlab.example.com/grp/proj/-/compare/main...triagebot%2Ffix-17',
+			'https://gitlab.example.com/grp/proj/-/compare/trunk...triagebot%2Ffix-17',
 		);
 	});
 
-	it('falls back to gitlab.com when CI_SERVER_URL is unset', async () => {
+	it('falls back to gitlab.com and main when neither variable is set', async () => {
 		delete process.env.CI_SERVER_URL;
+		delete process.env.CI_DEFAULT_BRANCH;
 		const { compareUrl } = await import('../src/gitlab.ts');
 		assert.equal(
 			compareUrl('grp/proj', 'triagebot/fix-17'),

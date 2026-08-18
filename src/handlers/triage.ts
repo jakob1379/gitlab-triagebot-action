@@ -418,7 +418,14 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 	// name: GitLab CI checks out a detached HEAD with no local branch refs, so
 	// `git diff main` is a fatal error there and would silently look like an
 	// empty diff.
-	const baseSha = (await session.shell('git rev-parse HEAD')).stdout.trim();
+	const baseShaResult = await session.shell('git rev-parse HEAD');
+	const baseSha = baseShaResult.stdout.trim();
+	// Unguarded, an empty baseSha turns the diff below into working-tree-vs-index.
+	// gitCommit stages and commits, so a run that found a fix would diff clean and
+	// be reported as "no fix found".
+	if (baseShaResult.exitCode !== 0 || !baseSha) {
+		throw new Error(`Could not resolve HEAD before triage: ${baseShaResult.stderr.trim()}`);
+	}
 
 	// Create the fix branch so the agent's changes don't land on main.
 	// This is needed for both initial triage and retriage.
@@ -473,7 +480,7 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 				);
 				openedPr = await createPullRequest(
 					ctx.repo,
-					{ head: branch, base: defaultBranch, title: prContent.title, body: prContent.body },
+					{ head: branch, base: defaultBranch(), title: prContent.title, body: prContent.body },
 					ctx.writeToken,
 				);
 				console.info(`Auto-PR created: ${openedPr.html_url}`);

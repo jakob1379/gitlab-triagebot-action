@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import type { ActionContext } from '../../src/context.ts';
-import { defaultBranch } from '../../src/gitlab.ts';
 import { handleVerifyFix } from '../../src/handlers/verify-fix.ts';
 import { labelConfigFromInputs } from '../../src/labels.ts';
 import { type GlabStub, ndjson, stubGlab } from '../helpers/glab-stub.ts';
@@ -13,6 +12,7 @@ import { type GlabStub, ndjson, stubGlab } from '../helpers/glab-stub.ts';
 const originalFetch = globalThis.fetch;
 const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
 const originalServerUrl = process.env.CI_SERVER_URL;
+const originalDefaultBranch = process.env.CI_DEFAULT_BRANCH;
 let tempDir: string | null = null;
 let glab: GlabStub | null = null;
 
@@ -22,6 +22,8 @@ afterEach(() => {
 	else process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
 	if (originalServerUrl === undefined) delete process.env.CI_SERVER_URL;
 	else process.env.CI_SERVER_URL = originalServerUrl;
+	if (originalDefaultBranch === undefined) delete process.env.CI_DEFAULT_BRANCH;
+	else process.env.CI_DEFAULT_BRANCH = originalDefaultBranch;
 	glab?.restore();
 	glab = null;
 	if (tempDir) {
@@ -108,6 +110,9 @@ function anthropicStream(toolInput: unknown): Response {
 describe('handleVerifyFix integration', () => {
 	it('falls back to legacy flue fix branches and verifies only after MR creation', async () => {
 		process.env.ANTHROPIC_API_KEY = 'test-key';
+		// Not "main": pinning it to something the fallback would never produce is
+		// what makes the --target-branch assertion below test the wiring.
+		process.env.CI_DEFAULT_BRANCH = 'trunk';
 		// Only the legacy branch exists, so findBranch has to fall through the
 		// preferred triagebot/ name to reach it.
 		serveProjectWithBranch('flue/fix-123');
@@ -194,7 +199,7 @@ describe('handleVerifyFix integration', () => {
 		const create = calls.find((c) => c.startsWith('mr create'));
 		assert.ok(create, 'expected an mr create call');
 		assert.match(create, /--source-branch flue\/fix-123\b/);
-		assert.match(create, new RegExp(`--target-branch ${defaultBranch}\\b`));
+		assert.match(create, /--target-branch trunk\b/);
 
 		// Order matters: the issue must not be marked verified before the MR that
 		// verification is claiming exists. Reads are concurrent, so compare only

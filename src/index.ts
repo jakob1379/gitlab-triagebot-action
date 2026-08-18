@@ -107,14 +107,24 @@ async function main(): Promise<void> {
 	}
 
 	// A project access token posts as `project_<id>_bot_<hash>`, which nothing
-	// can hardcode. Without this the bot answers its own comments and retriggers
-	// itself on every one it posts.
+	// can hardcode, so the bot has to ask who it is.
 	//
 	// writeToken, not readToken: comments are posted with the write token, so
 	// that is the username the webhook will report as their author.
+	//
+	// Fail closed. Without this name the bot cannot tell its own comments from a
+	// reporter's, and verify-fix picks "the latest comment not from a bot" as the
+	// reporter's verdict — which would be the bot's own triage report, text that
+	// describes a working fix. It classifies as confirmed, and a merge request
+	// gets opened with nobody having confirmed anything. A token that cannot read
+	// its own user will fail on the first write anyway.
 	const self = await currentUser(ctx.writeToken);
-	if (self) ctx.botLogins = [...new Set([...ctx.botLogins, self])];
-	else console.warn('Could not resolve the bot username; its own comments may retrigger triage.');
+	if (!self) {
+		throw new Error(
+			'Could not resolve the bot username from the write token. Refusing to run: without it the bot cannot recognise its own comments, and would treat its own triage report as the reporter confirming the fix.',
+		);
+	}
+	ctx.botLogins = [...new Set([...ctx.botLogins, self])];
 
 	const event = parseGitLabEvent(payload, ctx.botLogins);
 	if (!event) {

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { gitCommit } from '../src/git.ts';
+import { gitCommit, redactRemote } from '../src/git.ts';
 
 const originalCwd = process.cwd();
 let repo: string | null = null;
@@ -66,5 +66,33 @@ describe('gitCommit', () => {
 	it('returns a non-zero exitCode when there is nothing to commit', async () => {
 		const result = await gitCommit('chore: noop');
 		assert.notEqual(result.exitCode, 0);
+	});
+});
+
+describe('redactRemote', () => {
+	// The push remote carries the write token in its userinfo and git echoes the
+	// whole URL back on failure, so this is the only thing standing between a
+	// failed push and a token in the job log.
+	it('strips credentials from a remote URL', () => {
+		assert.equal(
+			redactRemote(
+				"fatal: could not read from 'https://oauth2:glpat-secret@gitlab.example.com/grp/proj.git'",
+			),
+			"fatal: could not read from 'https://<redacted>@gitlab.example.com/grp/proj.git'",
+		);
+	});
+
+	it('redacts every occurrence, not just the first', () => {
+		const out = redactRemote(
+			'https://oauth2:glpat-a@gitlab.com/a.git and http://oauth2:glpat-b@gitlab.com/b.git',
+		);
+		assert.doesNotMatch(out, /glpat-/);
+	});
+
+	it('leaves a URL without credentials alone', () => {
+		assert.equal(
+			redactRemote('https://gitlab.com/grp/proj.git'),
+			'https://gitlab.com/grp/proj.git',
+		);
 	});
 });
