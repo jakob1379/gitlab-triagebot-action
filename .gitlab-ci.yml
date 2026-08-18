@@ -28,12 +28,15 @@
 #
 # This job builds and runs the bot from the checkout it is in, so it belongs in
 # a fork or vendored copy of this repo, not a remote `include:` from your own
-# project (that would resolve dist/index.mjs against your checkout). If you do
-# `include:` it locally, note that triage is the only job here and its rule
-# excludes push/MR pipelines, so a standalone copy reports "No stages / jobs".
+# project (that would resolve dist/index.mjs against your checkout). The `test`
+# job below is this repo's own lint/test run, so an `include:` would drag that
+# onto your push and merge request pipelines too — vendor `triage` on its own if
+# the bot is all you want.
 
 triage:
-  image: node:22
+  # node:24 to match the runtime GitHub executes the action under (action.yml's
+  # `using: node24`); the esbuild target stays node22 and runs fine on it.
+  image: node:24
   timeout: 30 minutes
   # Job-level, not workflow-level: a top-level workflow:rules block would
   # disable push/MR/scheduled pipelines for the whole project adopting this.
@@ -63,3 +66,24 @@ triage:
     - pnpm build
   script:
     - node dist/index.mjs
+
+# This repo's own CI, mirroring .github/workflows/ci.yml. It never shares a
+# pipeline with triage: that one is trigger-only, this one is push/MR-only.
+test:
+  image: node:24
+  rules:
+    # Mirrors GitHub's `pull_request` + `push: branches: [main]`. The second
+    # entry is narrowed to the default branch so an MR branch push does not run
+    # this a second time alongside the merge request pipeline.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+  variables:
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+  before_script:
+    - corepack enable
+    - pnpm install --frozen-lockfile
+  script:
+    - pnpm lint
+    # Builds, checks dist parses, then runs unit + integration tests. The
+    # integration tests stub `glab` on PATH, so the real CLI is not needed here.
+    - pnpm test
