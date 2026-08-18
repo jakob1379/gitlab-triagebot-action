@@ -100,7 +100,7 @@ long as the ref is in the URL.
 Under **Settings → Webhooks**, add a hook with the **Issues events** and **Comments
 events** triggers and this URL:
 
-```
+```text
 https://gitlab.example.com/api/v4/projects/<id>/ref/main/trigger/pipeline?token=<trigger_token>
 ```
 
@@ -120,7 +120,7 @@ Requires GitLab 16.11+, for `object_attributes.action` on note hooks.
 The bot needs project-specific skill files that tell the AI agent how to work with your
 codebase. Create these in the directory specified by `triage-skill`:
 
-```
+```text
 .agents/skills/triage/
   SKILL.md          # Orchestration: defines the step order and early exits
   reproduce.md      # How to reproduce bugs in your project
@@ -129,7 +129,7 @@ codebase. Create these in the directory specified by `triage-skill`:
   fix.md            # How to write and verify fixes
 ```
 
-Each file is a markdown document with instructions for the AI agent. The
+Each file is a Markdown document with instructions for the AI agent. The
 [`examples/skills/triage/`](examples/skills/triage/) directory contains starter templates
 you can copy and customize. Look for `<!-- CUSTOMIZE -->` comments indicating
 project-specific sections.
@@ -163,7 +163,7 @@ You need credentials for the AI agent. Choose one of:
 Workers AI is called over its OpenAI-compatible REST endpoint, so the job still runs on a
 standard GitLab runner — no Worker deployment is required.
 
-```
+```text
 INPUT_CLOUDFLARE_API_KEY     = …
 INPUT_CLOUDFLARE_ACCOUNT_ID  = …
 INPUT_TRIAGE_MODEL           = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code
