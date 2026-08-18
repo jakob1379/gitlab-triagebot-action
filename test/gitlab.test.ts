@@ -4,15 +4,9 @@
  * Both bugs this file was written for were argv/mapping bugs: merge-request
  * labels going to `glab issue update` (labelling an unrelated issue), and
  * issue notes coming back newest-first.
- *
- * `glab` is resolved from PATH at call time, so a stub script on PATH is
- * enough — no module mocking needed.
  */
 
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import {
 	addLabels,
@@ -21,6 +15,7 @@ import {
 	fetchRepoLabels,
 	swapLabel,
 } from '../src/gitlab.ts';
+import { type GlabStub, ndjson, stubGlab } from './helpers/glab-stub.ts';
 
 const ISSUE = JSON.stringify({
 	title: 'crash on boot',
@@ -38,7 +33,7 @@ const ISSUE = JSON.stringify({
  * back to back (`[...][...]`), which JSON.parse rejects. `--output ndjson`
  * makes the page boundaries invisible, so this doubles as the multi-page case.
  */
-const NOTES = [
+const NOTES = ndjson([
 	{ body: 'first', author: { username: 'reporter' }, created_at: '2026-01-01T01:00:00Z' },
 	{
 		body: 'added ~bug',
@@ -47,65 +42,48 @@ const NOTES = [
 		system: true,
 	},
 	{ body: 'still broken', author: { username: 'reporter' }, created_at: '2026-01-01T03:00:00Z' },
-]
-	.map((n) => JSON.stringify(n))
-	.join('\n');
+]);
 
-/** `glab api --output ndjson` emits one object per line, not a JSON array. */
-const LABELS_NDJSON = [
+const LABELS_NDJSON = ndjson([
 	{ name: '- P3: minor', description: 'priority' },
 	{ name: 'pkg: astro', description: null },
 	{ name: 'documentation', description: 'docs' },
-]
-	.map((l) => JSON.stringify(l))
-	.join('\n');
+]);
 
-const realPath = process.env.PATH;
+let glab: GlabStub | null = null;
 afterEach(() => {
-	process.env.PATH = realPath;
+	glab?.restore();
+	glab = null;
 });
 
-/** Puts a recording `glab` stub first on PATH. Replies by subcommand. */
-function stubGlab(): () => string[] {
-	const dir = mkdtempSync(join(tmpdir(), 'glab-stub-'));
-	const log = join(dir, 'argv.log');
-	const bin = join(dir, 'glab');
-	writeFileSync(
-		bin,
-		[
-			'#!/bin/sh',
-			`printf '%s\\n' "$*" >> ${log}`,
-			'case "$*" in',
-			`  *notes*) printf '%s' '${NOTES}' ;;`,
-			`  *labels*) printf '%s' '${LABELS_NDJSON}' ;;`,
-			`  "issue view"*) printf '%s' '${ISSUE}' ;;`,
-			"  *) printf '%s' '[]' ;;",
-			'esac',
-		].join('\n'),
-	);
-	chmodSync(bin, 0o755);
-	writeFileSync(log, '');
-	process.env.PATH = `${dir}:${realPath}`;
-	return () => readFileSync(log, 'utf-8').split('\n').filter(Boolean);
+/** Replies for the reads here; every write comes back as an empty list. */
+function stub(): GlabStub {
+	glab = stubGlab([
+		{ match: 'notes', stdout: NOTES },
+		{ match: 'labels', stdout: LABELS_NDJSON },
+		{ match: '^issue view', stdout: ISSUE },
+		{ match: '', stdout: '[]' },
+	]);
+	return glab;
 }
 
 describe('gitlab forge', () => {
 	it('labels a merge request via `mr update`, not `issue update`', async () => {
 		// Merge requests carry their own iid sequence, so `issue update` with an
 		// MR iid silently labels an unrelated issue.
-		const argv = stubGlab();
+		const argv = stub().calls;
 		await addPullRequestLabels('grp/proj', 4, ['fix verified'], 'tok');
 		assert.equal(argv()[0], 'mr update 4 --label fix verified --repo grp/proj');
 	});
 
 	it('labels an issue via `issue update`', async () => {
-		const argv = stubGlab();
+		const argv = stub().calls;
 		await addLabels('grp/proj', 17, ['triage: needs triage'], 'tok');
 		assert.equal(argv()[0], 'issue update 17 --label triage: needs triage --repo grp/proj');
 	});
 
 	it('swaps labels in one request so the issue is never left unlabelled', async () => {
-		const argv = stubGlab();
+		const argv = stub().calls;
 		await swapLabel('grp/proj', 17, 'triage: needs triage', 'triage: fix pending', 'tok');
 		assert.equal(argv().length, 1);
 		assert.equal(
@@ -115,13 +93,13 @@ describe('gitlab forge', () => {
 	});
 
 	it('does nothing when there are no labels to add', async () => {
-		const argv = stubGlab();
+		const argv = stub().calls;
 		await addLabels('grp/proj', 17, [], 'tok');
 		assert.deepEqual(argv(), []);
 	});
 
 	it('parses ndjson label pages and partitions them', async () => {
-		const argv = stubGlab();
+		const argv = stub().calls;
 		const { priorityLabels, packageLabels } = await fetchRepoLabels('grp/proj', 'tok');
 		assert.match(argv()[0], /--paginate/);
 		assert.match(argv()[0], /--output ndjson/);
@@ -139,7 +117,7 @@ describe('gitlab forge', () => {
 		it('requests notes oldest-first, the order every caller assumes', async () => {
 			// GitLab defaults to sort=desc. Without this, verify-fix classifies
 			// the oldest comment as the reporter's latest word.
-			const argv = stubGlab();
+			const argv = stub().calls;
 			await fetchIssueDetails('grp/proj', 17, 'tok');
 			const notes = argv().find((a) => a.includes('/notes'));
 			assert.ok(notes, 'expected a notes request');
@@ -150,7 +128,7 @@ describe('gitlab forge', () => {
 			// `--paginate` alone emits one JSON array per page, back to back, which
 			// JSON.parse rejects — and pagination only kicks in on exactly the busy
 			// issues --paginate was added for.
-			const argv = stubGlab();
+			const argv = stub().calls;
 			await fetchIssueDetails('grp/proj', 17, 'tok');
 			const notes = argv().find((a) => a.includes('/notes'));
 			assert.ok(notes, 'expected a notes request');
@@ -159,7 +137,7 @@ describe('gitlab forge', () => {
 		});
 
 		it('maps GitLab fields onto the shared shape', async () => {
-			stubGlab();
+			stub();
 			const details = await fetchIssueDetails('grp/proj', 17, 'tok');
 			assert.equal(details.number, 17); // iid, not id
 			assert.equal(details.body, 'it crashes'); // description -> body
@@ -172,7 +150,7 @@ describe('gitlab forge', () => {
 		});
 
 		it('drops system notes so activity entries are not read as comments', async () => {
-			stubGlab();
+			stub();
 			const details = await fetchIssueDetails('grp/proj', 17, 'tok');
 			assert.deepEqual(
 				details.comments.map((c) => c.body),

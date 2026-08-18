@@ -23,8 +23,6 @@ export interface GlabRoute {
 	 * the last entry repeating once exhausted.
 	 */
 	stdout?: string | string[];
-	/** Non-zero to make the call fail, as glab does on a bad request. */
-	exitCode?: number;
 }
 
 export interface GlabStub {
@@ -32,8 +30,6 @@ export interface GlabStub {
 	calls(): string[];
 	/** The same calls, unjoined — use when an argument contains spaces. */
 	argv(): string[][];
-	/** Directory holding the stub; already prepended to PATH. */
-	dir: string;
 	/** Restores PATH and removes the stub. */
 	restore(): void;
 }
@@ -49,18 +45,22 @@ fs.appendFileSync(path.join(__dirname, 'argv.log'), JSON.stringify(args) + '\\n'
 const argv = args.join(' ');
 
 const routes = JSON.parse(fs.readFileSync(path.join(__dirname, 'routes.json'), 'utf8'));
-const countsPath = path.join(__dirname, 'counts.json');
-const counts = fs.existsSync(countsPath) ? JSON.parse(fs.readFileSync(countsPath, 'utf8')) : {};
 
 for (let i = 0; i < routes.length; i++) {
   const route = routes[i];
   if (!new RegExp(route.match).test(argv)) continue;
-  const seen = counts[i] ?? 0;
-  counts[i] = seen + 1;
-  fs.writeFileSync(countsPath, JSON.stringify(counts));
+  // One append-only file per route rather than a shared counter: the bot issues
+  // some reads concurrently, and a read-modify-write of one file would drop
+  // ticks. O_APPEND keeps each tick atomic.
+  const countFile = path.join(__dirname, 'count-' + i);
+  let seen = 0;
+  try {
+    seen = fs.readFileSync(countFile, 'utf8').length;
+  } catch {}
+  fs.appendFileSync(countFile, 'x');
   const replies = route.stdout ?? [''];
   process.stdout.write(replies[Math.min(seen, replies.length - 1)]);
-  process.exit(route.exitCode ?? 0);
+  process.exit(0);
 }
 
 // Unmatched calls fail loudly: a silent empty reply would surface much later as
@@ -79,7 +79,6 @@ export function stubGlab(routes: GlabRoute[]): GlabStub {
 			routes.map((r) => ({
 				match: r.match,
 				stdout: r.stdout === undefined ? [''] : [r.stdout].flat(),
-				exitCode: r.exitCode,
 			})),
 		),
 	);
@@ -98,7 +97,6 @@ export function stubGlab(routes: GlabRoute[]): GlabStub {
 			.map((line) => JSON.parse(line) as string[]);
 
 	return {
-		dir,
 		argv,
 		calls: () => argv().map((a) => a.join(' ')),
 		restore() {

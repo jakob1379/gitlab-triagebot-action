@@ -20,7 +20,7 @@ const execFileAsync = promisify(execFileCb);
 // written against; the mapping from GitLab's own field names happens in
 // fetchIssueDetails below.
 
-export const issueDetailsSchema = v.object({
+const issueDetailsSchema = v.object({
 	title: v.string(),
 	body: v.string(),
 	author: v.object({ login: v.string() }),
@@ -40,7 +40,7 @@ export const issueDetailsSchema = v.object({
 });
 export type IssueDetails = v.InferOutput<typeof issueDetailsSchema>;
 
-export const repoLabelSchema = v.object({
+const repoLabelSchema = v.object({
 	name: v.string(),
 	description: v.nullable(v.string()),
 });
@@ -77,7 +77,7 @@ export function agentEnv(readToken: string): Record<string, string | undefined> 
 }
 
 /** Partition project labels into the two groups the triage prompt offers. */
-export function splitRepoLabels(allLabels: RepoLabel[]): {
+function splitRepoLabels(allLabels: RepoLabel[]): {
 	priorityLabels: RepoLabel[];
 	packageLabels: RepoLabel[];
 } {
