@@ -2,24 +2,20 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { getInput } from '../src/input.ts';
 
-const envNames = ['INPUT_READ-TOKEN', 'INPUT_READ_TOKEN'];
-
 afterEach(() => {
-	for (const envName of envNames) {
-		delete process.env[envName];
-	}
+	delete process.env.INPUT_READ_TOKEN;
 });
 
 describe('getInput', () => {
-	it('reads GitHub action inputs with hyphenated names', () => {
-		process.env['INPUT_READ-TOKEN'] = ' token-value ';
+	// GitLab CI/CD variable keys allow only letters, digits and underscores, so
+	// a hyphenated input name has to be looked up in its underscored form.
+	it('maps a hyphenated input name onto its underscored variable', () => {
+		process.env.INPUT_READ_TOKEN = ' token-value ';
 
 		assert.equal(getInput('read-token'), 'token-value');
 	});
 
-	it('keeps the previous underscore lookup as a fallback', () => {
-		process.env.INPUT_READ_TOKEN = 'legacy-token';
-
-		assert.equal(getInput('read-token'), 'legacy-token');
+	it('returns an empty string for an unset input', () => {
+		assert.equal(getInput('read-token'), '');
 	});
 });

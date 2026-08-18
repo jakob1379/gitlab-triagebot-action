@@ -91,8 +91,8 @@ function stubGlab(): () => string[] {
 
 describe('gitlab forge', () => {
 	it('labels a merge request via `mr update`, not `issue update`', async () => {
-		// GitHub numbers issues and PRs together; GitLab does not. `issue update`
-		// with an MR iid silently labels an unrelated issue.
+		// Merge requests carry their own iid sequence, so `issue update` with an
+		// MR iid silently labels an unrelated issue.
 		const argv = stubGlab();
 		await addPullRequestLabels('grp/proj', 4, ['fix verified'], 'tok');
 		assert.equal(argv()[0], 'mr update 4 --label fix verified --repo grp/proj');
@@ -136,7 +136,7 @@ describe('gitlab forge', () => {
 	});
 
 	describe('fetchIssueDetails', () => {
-		it('requests notes oldest-first to match GitHub ordering', async () => {
+		it('requests notes oldest-first, the order every caller assumes', async () => {
 			// GitLab defaults to sort=desc. Without this, verify-fix classifies
 			// the oldest comment as the reporter's latest word.
 			const argv = stubGlab();

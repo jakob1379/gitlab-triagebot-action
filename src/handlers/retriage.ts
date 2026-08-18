@@ -9,7 +9,7 @@ import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 import type { ActionContext } from '../context.ts';
 import { createSession } from '../flue.ts';
-import { agentEnv, fetchIssueDetails, swapLabel } from '../forge.ts';
+import { agentEnv, fetchIssueDetails, swapLabel } from '../gitlab.ts';
 import { countTriageFailures, handleTriage, MAX_TRIAGE_FAILURES } from './triage.ts';
 
 export async function handleRetriage(
@@ -36,7 +36,7 @@ export async function handleRetriage(
 	const session = await createSession(agent);
 
 	const { data: decision } = await session.prompt(
-		`You are reviewing a GitHub issue conversation to decide whether a triage re-run is warranted.
+		`You are reviewing a GitLab issue conversation to decide whether a triage re-run is warranted.
 
 ## Issue
 **${issueDetails.title}**

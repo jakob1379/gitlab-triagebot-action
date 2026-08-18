@@ -4,12 +4,12 @@
  * directly when auto-pr-on-fix is enabled).
  *
  * These functions only generate the PR title and body — the caller is
- * responsible for actually creating the PR via github.ts.
+ * responsible for actually creating the PR via gitlab.ts.
  */
 
 import type { FlueSession } from '@flue/runtime';
 import * as v from 'valibot';
-import { defaultBranch, type IssueDetails } from './forge.ts';
+import { defaultBranch, type IssueDetails } from './gitlab.ts';
 
 export interface PRContent {
 	title: string;

@@ -10,9 +10,8 @@
       {
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
-            act
             gitlab-ci-local
-            nodejs_22
+            nodejs_24
             pnpm
             glab
           ];

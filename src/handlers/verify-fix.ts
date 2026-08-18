@@ -21,7 +21,7 @@ import {
 	findPullRequest,
 	postComment,
 	swapLabel,
-} from '../forge.ts';
+} from '../gitlab.ts';
 import { generatePRContent } from '../pr.ts';
 
 export async function handleVerifyFix(issueNumber: number, ctx: ActionContext): Promise<void> {
@@ -56,7 +56,7 @@ export async function handleVerifyFix(issueNumber: number, ctx: ActionContext): 
 
 	// Classify the comment.
 	const { data: classification } = await session.prompt(
-		`You are reviewing a GitHub issue comment to determine if the commenter is confirming that a proposed fix works.
+		`You are reviewing a GitLab issue comment to determine if the commenter is confirming that a proposed fix works.
 
 ## Context
 

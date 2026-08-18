@@ -3,7 +3,7 @@
  */
 
 import type { ActionContext } from '../context.ts';
-import { deleteBranch } from '../forge.ts';
+import { deleteBranch } from '../gitlab.ts';
 
 export async function handleCleanup(issueNumber: number, ctx: ActionContext): Promise<void> {
 	const branch = `triagebot/fix-${issueNumber}`;

@@ -11,14 +11,14 @@ Triage a bug report end-to-end: reproduce the bug, diagnose the root cause, veri
 
 **Do not get stuck on infrastructure problems.** Bail out after 2 attempts and write your report with the data you already have.
 
-This is a GitHub Action project written in TypeScript. The codebase is small — the important files are in `src/` and `test/`. There are no dev servers or browsers involved; bugs will be in the routing logic, GitHub API interactions, label management, or LLM prompt handling.
+This is a GitLab CI project written in TypeScript. The codebase is small — the important files are in `src/` and `test/`. There are no dev servers or browsers involved; bugs will be in the routing logic, GitLab API interactions, label management, or LLM prompt handling.
 
 ## Input
 
 You need either:
 
 - `issueTitle` and `issueBody` provided in args, OR
-- An issue number or URL (use `gh issue view`, or `glab issue view` on GitLab, to fetch details)
+- An issue number or URL (use `glab issue view` to fetch details)
 
 If a `triageDir` is provided in args, use that as the working directory. Otherwise, default to `triage/gh-<issue_number>`.
 

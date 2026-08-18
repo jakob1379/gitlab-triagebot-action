@@ -1,13 +1,13 @@
 /**
- * Entry point for the triagebot GitHub Action.
+ * Entry point for the triagebot GitLab CI job.
  *
- * Reads the GitHub event payload and action inputs, routes to the
- * appropriate handler via the FSM router.
+ * Reads the webhook body GitLab dropped at $TRIGGER_PAYLOAD along with the
+ * INPUT_* job variables, then routes to the appropriate handler via the FSM
+ * router.
  */
 
 import { readFileSync } from 'node:fs';
 import type { ActionContext } from './context.ts';
-import { isGitLab } from './forge.ts';
 import { currentUser } from './gitlab.ts';
 import { parseGitLabEvent } from './gitlab-event.ts';
 import { handleCleanup } from './handlers/cleanup.ts';
@@ -16,18 +16,20 @@ import { handleTriage } from './handlers/triage.ts';
 import { handleVerifyFix } from './handlers/verify-fix.ts';
 import { getInput } from './input.ts';
 import { labelConfigFromInputs } from './labels.ts';
-import { type GitHubEvent, route } from './router.ts';
+import { route } from './router.ts';
 
-// ---------- GitHub Actions helpers ----------
+// ---------- Input helpers ----------
 
 function parseBotLogins(input: string): string[] {
-	const defaults = ['github-actions[bot]'];
-	if (!input) return defaults;
-	const extra = input
-		.split(',')
-		.map((s) => s.trim())
-		.filter(Boolean);
-	return [...new Set([...defaults, ...extra])];
+	if (!input) return [];
+	return [
+		...new Set(
+			input
+				.split(',')
+				.map((s) => s.trim())
+				.filter(Boolean),
+		),
+	];
 }
 
 function getRequiredInput(name: string): string {
@@ -41,18 +43,20 @@ function getRequiredInput(name: string): string {
 // ---------- Main ----------
 
 async function main(): Promise<void> {
-	// Read the GitHub event payload.
-	const eventPath = process.env.GITHUB_EVENT_PATH;
+	// GitLab hands a webhook-triggered pipeline the request body as a file and
+	// puts its path here.
+	const eventPath = process.env.TRIGGER_PAYLOAD;
 	if (!eventPath) {
-		throw new Error('GITHUB_EVENT_PATH is not set');
+		throw new Error(
+			'TRIGGER_PAYLOAD is not set. This job expects a pipeline triggered by a project webhook; see .gitlab-ci.yml.',
+		);
 	}
 	const payload = JSON.parse(readFileSync(eventPath, 'utf-8'));
 
-	// GitLab CI names the project path CI_PROJECT_PATH; it is the same
-	// "namespace/project" shape GITHUB_REPOSITORY uses.
-	const repo = isGitLab ? process.env.CI_PROJECT_PATH : process.env.GITHUB_REPOSITORY;
+	// Same "namespace/project" shape the glab --repo flag wants.
+	const repo = process.env.CI_PROJECT_PATH;
 	if (!repo) {
-		throw new Error(`${isGitLab ? 'CI_PROJECT_PATH' : 'GITHUB_REPOSITORY'} is not set`);
+		throw new Error('CI_PROJECT_PATH is not set');
 	}
 
 	// Build the action context from inputs.
@@ -102,31 +106,17 @@ async function main(): Promise<void> {
 		process.env.CLOUDFLARE_ACCOUNT_ID = ctx.cloudflareAccountId;
 	}
 
-	// A GitLab project access token posts as `project_<id>_bot_<hash>`, which
-	// nothing can hardcode. Without this the bot answers its own comments and
-	// retriggers itself on every one it posts.
-	if (isGitLab) {
-		// writeToken, not readToken: comments are posted with the write token, so
-		// that is the username the webhook will report as their author.
-		const self = await currentUser(ctx.writeToken);
-		if (self) ctx.botLogins = [...new Set([...ctx.botLogins, self])];
-		else console.warn('Could not resolve the bot username; its own comments may retrigger triage.');
-	}
+	// A project access token posts as `project_<id>_bot_<hash>`, which nothing
+	// can hardcode. Without this the bot answers its own comments and retriggers
+	// itself on every one it posts.
+	//
+	// writeToken, not readToken: comments are posted with the write token, so
+	// that is the username the webhook will report as their author.
+	const self = await currentUser(ctx.writeToken);
+	if (self) ctx.botLogins = [...new Set([...ctx.botLogins, self])];
+	else console.warn('Could not resolve the bot username; its own comments may retrigger triage.');
 
-	// Parse the event into the shape the router expects.
-	let event: GitHubEvent | null = null;
-	if (isGitLab) {
-		event = parseGitLabEvent(payload, ctx.botLogins);
-	} else if (payload.issue) {
-		event = {
-			action: payload.action,
-			isPullRequest: !!payload.issue.pull_request,
-			issueNumber: payload.issue.number,
-			issueLabels: (payload.issue.labels ?? []).map((l: { name: string }) => l.name),
-			commentAuthor: payload.comment?.user?.login,
-			botLogins: ctx.botLogins,
-		};
-	}
+	const event = parseGitLabEvent(payload, ctx.botLogins);
 	if (!event) {
 		console.info('No issue in event payload, nothing to do.');
 		return;

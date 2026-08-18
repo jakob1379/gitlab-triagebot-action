@@ -1,6 +1,6 @@
 # Reproduce
 
-Reproduce a GitHub issue to determine if a bug is valid and reproducible.
+Reproduce a GitLab issue to determine if a bug is valid and reproducible.
 
 **CRITICAL: You MUST always write `report.md` to the triage directory before finishing, regardless of outcome.**
 
@@ -9,7 +9,7 @@ Reproduce a GitHub issue to determine if a bug is valid and reproducible.
 ## Prerequisites
 
 - **`triageDir`** — Working directory for the triage (default: `triage/gh-<issue_number>`).
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 
 ## Step 1: Confirm Bug Details
 
@@ -35,11 +35,11 @@ Skip if a maintainer (`authorAssociation` of `MEMBER`, `COLLABORATOR`, or `OWNER
 
 ## Step 3: Set Up Reproduction
 
-This project is a GitHub Action written in TypeScript. Bugs typically manifest as:
+This project is a GitLab CI job written in TypeScript. Bugs typically manifest as:
 
 - **Incorrect routing** — the FSM router picks the wrong handler for an event
 - **Wrong label transitions** — labels aren't swapped correctly
-- **GitHub API failures** — incorrect API calls or missing error handling
+- **GitLab API failures** — incorrect API calls or missing error handling
 - **LLM prompt issues** — classification returns wrong results
 - **Build/bundle problems** — the esbuild output doesn't work correctly
 
@@ -62,7 +62,7 @@ const result = route({ /* event matching the issue */ }, labels);
 console.log('Result:', result);
 ```
 
-For GitHub API issues, check the relevant function in `src/github.ts` against the reported behavior.
+For GitLab API issues, check the relevant function in `src/gitlab.ts` against the reported behavior.
 
 For LLM prompt issues, these are harder to reproduce deterministically. Document the prompt and expected vs actual classification.
 

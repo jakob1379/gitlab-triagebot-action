@@ -1,9 +1,8 @@
 /**
  * End-to-end coverage for the GitLab entrypoint.
  *
- * `src/forge.ts` picks its backend off GITLAB_CI at module load, so the GitLab
- * path is only reachable from a fresh process — hence spawning the built bundle
- * rather than importing handlers, the same shape as action-entrypoint.test.ts.
+ * Spawns the built bundle rather than importing handlers, so the run goes
+ * through the same argv, env and module-load order a CI job does.
  *
  * Everything the bot touches here is either the stubbed `glab` on PATH or the
  * payload file, so no case reaches the network.
@@ -29,7 +28,7 @@ afterEach(() => {
 });
 
 /**
- * Runs the built bundle the way a GitLab CI job does, with a `glab` stub first
+ * Runs the built bundle the way the triage job does, with a `glab` stub first
  * on PATH. The stub answers `api user` and fails everything else, so a case that
  * routes to a handler stops at its first forge read instead of calling out.
  */
@@ -56,15 +55,14 @@ function runGitLabJob(payload: unknown) {
 		env: {
 			...process.env,
 			PATH: `${tempDir}:${process.env.PATH}`,
-			GITLAB_CI: 'true',
-			// Not GITHUB_REPOSITORY: the GitLab path reads the project path here.
 			CI_PROJECT_PATH: 'grp/proj',
 			CI_SERVER_URL: 'https://gitlab.example.com',
-			GITHUB_EVENT_PATH: eventPath,
-			'INPUT_READ-TOKEN': 'read-token',
-			'INPUT_WRITE-TOKEN': 'write-token',
-			'INPUT_ANTHROPIC-API-KEY': 'anthropic-key',
-			'INPUT_TRIAGE-SKILL': '.agents/skills/triage',
+			// A webhook-triggered pipeline gets the request body as a file here.
+			TRIGGER_PAYLOAD: eventPath,
+			INPUT_READ_TOKEN: 'read-token',
+			INPUT_WRITE_TOKEN: 'write-token',
+			INPUT_ANTHROPIC_API_KEY: 'anthropic-key',
+			INPUT_TRIAGE_SKILL: '.agents/skills/triage',
 		},
 		encoding: 'utf8',
 	});
@@ -100,7 +98,7 @@ describe('gitlab entrypoint', () => {
 	});
 
 	it('routes a newly opened issue to triage', () => {
-		// GitLab says "open" where the router matches GitHub's "opened".
+		// GitLab says "open"; the router matches on "opened".
 		const result = runGitLabJob({
 			object_kind: 'issue',
 			object_attributes: { action: 'open', iid: 42 },

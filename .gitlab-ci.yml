@@ -1,4 +1,4 @@
-# GitLab CI equivalent of .github/workflows/triage.yml
+# Triage bot pipeline.
 #
 # GitLab has no issue-event pipeline source, but it does not need an external
 # webhook receiver either: a project webhook can POST straight at the pipeline
@@ -10,8 +10,8 @@
 #
 # The ref in the URL wins over anything in the payload, and GitLab exposes the
 # full webhook body to the job as $TRIGGER_PAYLOAD — a *file path*, which is
-# exactly the shape the bot wants for GITHUB_EVENT_PATH. src/gitlab-event.ts
-# translates the GitLab body into the event the router already understands.
+# what src/index.ts reads the event from. src/gitlab-event.ts then translates
+# the GitLab body into the event the router understands.
 #
 # CI_PIPELINE_SOURCE is `trigger`, not anything issue-specific, so rules: cannot
 # gate on the event type — the payload is a file, which rules: cannot read.
@@ -32,10 +32,11 @@
 # job below is this repo's own lint/test run, so an `include:` would drag that
 # onto your push and merge request pipelines too — vendor `triage` on its own if
 # the bot is all you want.
+#
+# For GitHub Actions, use upstream withastro/triagebot-action instead; this fork
+# dropped the GitHub backend.
 
 triage:
-  # node:24 to match the runtime GitHub executes the action under (action.yml's
-  # `using: node24`); the esbuild target stays node22 and runs fine on it.
   image: node:24
   timeout: 30 minutes
   # Job-level, not workflow-level: a top-level workflow:rules block would
@@ -50,7 +51,6 @@ triage:
   resource_group: triage
   variables:
     GIT_DEPTH: 0
-    GITHUB_EVENT_PATH: $TRIGGER_PAYLOAD
     GITLAB_HOST: $CI_SERVER_URL
     INPUT_TRIAGE_SKILL: .agents/skills/triage
     COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
@@ -67,14 +67,13 @@ triage:
   script:
     - node dist/index.mjs
 
-# This repo's own CI, mirroring .github/workflows/ci.yml. It never shares a
-# pipeline with triage: that one is trigger-only, this one is push/MR-only.
+# This repo's own CI. It never shares a pipeline with triage: that one is
+# trigger-only, this one is push/MR-only.
 test:
   image: node:24
   rules:
-    # Mirrors GitHub's `pull_request` + `push: branches: [main]`. The second
-    # entry is narrowed to the default branch so an MR branch push does not run
-    # this a second time alongside the merge request pipeline.
+    # Narrowing the push entry to the default branch keeps a merge request
+    # branch push from running this a second time alongside the MR pipeline.
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
   variables:

@@ -21,7 +21,7 @@ async function shouldRetriage(conversation: string): Promise<'yes' | 'no'> {
 	const session = await createSession(agent);
 
 	const { data } = await session.prompt(
-		`You are reviewing a GitHub issue conversation to decide whether a triage re-run is warranted.
+		`You are reviewing a GitLab issue conversation to decide whether a triage re-run is warranted.
 
 ## Conversation
 ${conversation}

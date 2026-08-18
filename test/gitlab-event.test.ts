@@ -38,8 +38,8 @@ describe('parseGitLabEvent', () => {
 	});
 
 	it('leaves issue update unmapped so the router skips it', () => {
-		// GitHub only fires on opened/reopened/closed; a label edit must not
-		// re-trigger triage.
+		// Only open/reopen/close are mapped; a label edit must not re-trigger
+		// triage.
 		assert.equal(parseGitLabEvent(issueEvent('update'), BOTS)?.action, 'update');
 	});
 
@@ -69,8 +69,7 @@ describe('parseGitLabEvent', () => {
 		assert.equal(parseGitLabEvent({}, BOTS), null);
 	});
 
-	// End to end through the real router: a GitLab payload has to produce the
-	// same decision the GitHub payload would.
+	// End to end through the real router, not just the payload mapping.
 	it('routes a GitLab issue open to triage', () => {
 		assert.deepEqual(route(parseGitLabEvent(issueEvent('open'), BOTS)!, labels), {
 			type: 'triage',
@@ -96,13 +95,13 @@ describe('parseGitLabEvent', () => {
 
 describe('compareUrl', () => {
 	// The bot renders this into every triage comment that produced a fix branch,
-	// so a github.com link on GitLab is a dead link in user-facing output.
+	// so a wrong host here is a dead link in user-facing output.
 	//
 	// Real GitLab CI always sets both of these, so pin them instead of asserting
 	// against whatever the ambient environment carries: a runner that derives
 	// CI_SERVER_URL from the git remote would otherwise turn the assertion below
 	// into a test of the dev machine. CI_DEFAULT_BRANCH is set here rather than
-	// per-test because forge.ts reads it once, at module load.
+	// per-test because gitlab.ts reads it once, at module load.
 	process.env.CI_DEFAULT_BRANCH = 'main';
 
 	const originalServerUrl = process.env.CI_SERVER_URL;
@@ -113,27 +112,19 @@ describe('compareUrl', () => {
 
 	it('points at the GitLab instance the job runs on', async () => {
 		process.env.CI_SERVER_URL = 'https://gitlab.example.com';
-		const { compareUrl } = await import('../src/forge.ts');
+		const { compareUrl } = await import('../src/gitlab.ts');
 		assert.equal(
-			compareUrl('grp/proj', 'triagebot/fix-17', true),
+			compareUrl('grp/proj', 'triagebot/fix-17'),
 			'https://gitlab.example.com/grp/proj/-/compare/main...triagebot%2Ffix-17',
 		);
 	});
 
 	it('falls back to gitlab.com when CI_SERVER_URL is unset', async () => {
 		delete process.env.CI_SERVER_URL;
-		const { compareUrl } = await import('../src/forge.ts');
+		const { compareUrl } = await import('../src/gitlab.ts');
 		assert.equal(
-			compareUrl('grp/proj', 'triagebot/fix-17', true),
+			compareUrl('grp/proj', 'triagebot/fix-17'),
 			'https://gitlab.com/grp/proj/-/compare/main...triagebot%2Ffix-17',
-		);
-	});
-
-	it('uses GitHub compare syntax on GitHub', async () => {
-		const { compareUrl } = await import('../src/forge.ts');
-		assert.equal(
-			compareUrl('org/repo', 'triagebot/fix-17', false),
-			'https://github.com/org/repo/compare/triagebot/fix-17?expand=1',
 		);
 	});
 });

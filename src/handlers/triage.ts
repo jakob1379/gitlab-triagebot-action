@@ -12,6 +12,7 @@ import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 import type { ActionContext } from '../context.ts';
 import { createSession } from '../flue.ts';
+import { gitCommit } from '../git.ts';
 import {
 	addLabels,
 	addPullRequestLabels,
@@ -21,14 +22,13 @@ import {
 	fetchIssueDetails,
 	fetchRepoLabels,
 	findPullRequest,
-	gitCommit,
 	gitPush,
 	type IssueDetails,
 	type PullRequest,
 	postComment,
 	type RepoLabel,
 	swapLabel,
-} from '../forge.ts';
+} from '../gitlab.ts';
 import { currentTriageLabel } from '../labels.ts';
 import { generatePRContent } from '../pr.ts';
 import { generateComment } from './comment.ts';
@@ -256,7 +256,7 @@ async function selectTriageLabels(
 	const packageLabelNames = packageLabels.map((l) => l.name);
 
 	const { data: labelResult } = await session.prompt(
-		`Label the following GitHub issue based on the triage report that was already posted.
+		`Label the following GitLab issue based on the triage report that was already posted.
 
 Select labels for this issue from the lists below based on the triage report. Select exactly one priority label (the report's **Priority** section is a strong hint) and 0-3 package labels based on where the issue lives in the monorepo and how it manifests.
 
@@ -325,17 +325,9 @@ export function countTriageFailures(issueDetails: IssueDetails): number {
 		.length;
 }
 
-function currentRunUrl(ctx: ActionContext): string | null {
-	// GitLab hands us the full pipeline URL directly.
-	if (process.env.CI_PIPELINE_URL) return process.env.CI_PIPELINE_URL;
-	const runId = process.env.GITHUB_RUN_ID;
-	if (!runId) return null;
-	const serverUrl = process.env.GITHUB_SERVER_URL || 'https://github.com';
-	return `${serverUrl}/${ctx.repo}/actions/runs/${runId}`;
-}
-
-function formatFailureComment(error: unknown, attempt: number, ctx: ActionContext): string {
-	const runUrl = currentRunUrl(ctx);
+function formatFailureComment(error: unknown, attempt: number): string {
+	// GitLab hands the job the full pipeline URL, so there is nothing to build.
+	const runUrl = process.env.CI_PIPELINE_URL;
 	const message = error instanceof Error ? error.message : String(error);
 	const retryMessage =
 		attempt >= MAX_TRIAGE_FAILURES
@@ -366,12 +358,7 @@ async function recordTriageFailure(
 		ctx.labels,
 	);
 
-	await postComment(
-		ctx.repo,
-		issueNumber,
-		formatFailureComment(error, attempt, ctx),
-		ctx.writeToken,
-	);
+	await postComment(ctx.repo, issueNumber, formatFailureComment(error, attempt), ctx.writeToken);
 	await swapLabel(ctx.repo, issueNumber, currentLabel, ctx.labels.failed, ctx.writeToken);
 }
 
@@ -405,17 +392,21 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	const agent = createAgent(() => ({
 		sandbox: local({
+			// flue's local() sandbox passes through only what it is handed, so
+			// enumerate the CI context the skills may want. agentEnv supplies the
+			// glab credentials on top.
 			env: {
 				...agentEnv(ctx.readToken),
-				GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
-				GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
-				GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
-				GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
-				GITHUB_ACTOR_ID: process.env.GITHUB_ACTOR_ID,
-				GITHUB_SHA: process.env.GITHUB_SHA,
-				GITHUB_REF_NAME: process.env.GITHUB_REF_NAME,
-				GITHUB_OUTPUT: process.env.GITHUB_OUTPUT,
-				GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+				GITLAB_CI: process.env.GITLAB_CI,
+				CI_PROJECT_PATH: process.env.CI_PROJECT_PATH,
+				CI_PROJECT_URL: process.env.CI_PROJECT_URL,
+				CI_DEFAULT_BRANCH: process.env.CI_DEFAULT_BRANCH,
+				CI_PIPELINE_ID: process.env.CI_PIPELINE_ID,
+				CI_PIPELINE_URL: process.env.CI_PIPELINE_URL,
+				CI_JOB_ID: process.env.CI_JOB_ID,
+				CI_COMMIT_SHA: process.env.CI_COMMIT_SHA,
+				CI_COMMIT_REF_NAME: process.env.CI_COMMIT_REF_NAME,
+				TRIGGER_PAYLOAD: process.env.TRIGGER_PAYLOAD,
 			},
 		}),
 		model: ctx.triageModel,

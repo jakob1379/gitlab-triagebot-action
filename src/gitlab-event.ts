@@ -9,9 +9,9 @@
  * with an action the router does not handle, which it turns into a skip.
  */
 
-import type { GitHubEvent } from './router.ts';
+import type { TriageEvent } from './router.ts';
 
-/** GitLab issue actions -> the GitHub action names the router matches on. */
+/** GitLab issue actions -> the action names the router matches on. */
 const ISSUE_ACTIONS: Record<string, string> = {
 	open: 'opened',
 	reopen: 'reopened',
@@ -27,7 +27,7 @@ function titles(labels: { title?: string }[] | undefined): string[] {
  * Returns null when the payload carries no issue at all (a comment on a
  * snippet or a commit), meaning there is nothing for the bot to act on.
  */
-export function parseGitLabEvent(payload: any, botLogins: string[]): GitHubEvent | null {
+export function parseGitLabEvent(payload: any, botLogins: string[]): TriageEvent | null {
 	const attrs = payload?.object_attributes ?? {};
 
 	if (payload?.object_kind === 'issue') {
@@ -46,7 +46,7 @@ export function parseGitLabEvent(payload: any, botLogins: string[]): GitHubEvent
 		if (attrs.noteable_type !== 'Issue' || !payload.issue) return null;
 		return {
 			// GitLab notes are "create" or "update"; only new comments trigger,
-			// matching the GitHub workflow's issue_comment: [created].
+			// so an edited comment does not re-run triage.
 			action: attrs.action === 'create' ? 'created' : (attrs.action ?? 'unknown'),
 			isPullRequest: false,
 			issueNumber: payload.issue.iid,

@@ -9,7 +9,7 @@ Find the root cause of a reproduced bug in the triagebot-action source code.
 ## Prerequisites
 
 - **`triageDir`** — Directory with the reproduction.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 - **`report.md`** — From the reproduce step.
 
 ## Step 1: Review the Reproduction
@@ -24,7 +24,7 @@ The codebase is small. Key files:
 |------|---------------|
 | `src/router.ts` | FSM routing: event + labels → action type |
 | `src/labels.ts` | Label config, categorization, swap helpers |
-| `src/github.ts` | GitHub API (issues, labels, comments, PRs, branches) |
+| `src/gitlab.ts` | GitLab API (issues, labels, notes, MRs, branches) |
 | `src/index.ts` | Entry point: reads event payload, builds context, calls router |
 | `src/context.ts` | ActionContext type definition |
 | `src/handlers/triage.ts` | Full triage pipeline (reproduce → diagnose → verify → fix) |
@@ -37,7 +37,7 @@ The codebase is small. Key files:
 
 For logic bugs (router, labels), read the code and trace the execution path with the inputs from the reproduction.
 
-For API bugs, check the request construction in `src/github.ts` — URL encoding, headers, token usage, response parsing.
+For API bugs, check the `glab` argv construction in `src/gitlab.ts` — subcommand choice, URL encoding, token passing, output parsing.
 
 For LLM prompt bugs, examine the prompt text in the handler files. Check whether the Valibot schema matches what the LLM is expected to return.
 

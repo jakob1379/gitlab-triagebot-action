@@ -1,30 +1,95 @@
 /**
- * GitLab helpers, backed by the `glab` CLI.
+ * Everything the handlers need from GitLab, backed by the `glab` CLI.
  *
- * Mirrors the exported surface of github.ts one-for-one so handlers can run
- * against either forge via forge.ts. The shared result types live in
- * github.ts — they describe what the handlers consume, not which forge
- * produced them.
+ * This is the only forge module. The bot ran on GitHub Actions once and kept a
+ * backend-selecting indirection for it; that is gone, and upstream
+ * withastro/triagebot-action is where the GitHub Action lives.
  */
 
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as v from 'valibot';
 import { type GitResult, push, redactRemote } from './git.ts';
-import {
-	type IssueDetails,
-	issueDetailsSchema,
-	type PullRequest,
-	type RepoLabel,
-	repoLabelSchema,
-	splitRepoLabels,
-} from './github.ts';
 
 const execFileAsync = promisify(execFileCb);
 
+// ---------- Shared result types ----------
+//
+// These describe what the handlers consume. Field names read GitHub-ish
+// (`body`, `login`) because that is the shape the prompts and skills were
+// written against; the mapping from GitLab's own field names happens in
+// fetchIssueDetails below.
+
+export const issueDetailsSchema = v.object({
+	title: v.string(),
+	body: v.string(),
+	author: v.object({ login: v.string() }),
+	labels: v.array(v.looseObject({ name: v.string() })),
+	createdAt: v.string(),
+	state: v.string(),
+	number: v.number(),
+	url: v.string(),
+	comments: v.array(
+		v.looseObject({
+			author: v.object({ login: v.string() }),
+			authorAssociation: v.string(),
+			body: v.string(),
+			createdAt: v.string(),
+		}),
+	),
+});
+export type IssueDetails = v.InferOutput<typeof issueDetailsSchema>;
+
+export const repoLabelSchema = v.object({
+	name: v.string(),
+	description: v.nullable(v.string()),
+});
+export type RepoLabel = v.InferOutput<typeof repoLabelSchema>;
+
+/** A merge request, under the name the handlers and prompts use. */
+export interface PullRequest {
+	number: number;
+	html_url: string;
+}
+
+/** Branch fix MRs target. GitLab projects are not all called "main". */
+export const defaultBranch = process.env.CI_DEFAULT_BRANCH || 'main';
+
+/** The GitLab instance this job is running against. */
+function serverUrl(): string {
+	// CI_SERVER_URL, not CI_SERVER_HOST: the latter is host-only, so a
+	// self-hosted instance on http or a non-default port would be unreachable.
+	return process.env.CI_SERVER_URL || 'https://gitlab.com';
+}
+
+/** Link a fix branch back to GitLab's compare view. */
+export function compareUrl(repo: string, branch: string): string {
+	return `${serverUrl()}/${repo}/-/compare/${defaultBranch}...${encodeURIComponent(branch)}`;
+}
+
+/**
+ * GitLab credentials for the triage agent's sandbox. The skills shell out to
+ * `glab`, and flue's local() sandbox only passes through the env it is handed,
+ * so without this the agent's CLI calls run unauthenticated.
+ */
+export function agentEnv(readToken: string): Record<string, string | undefined> {
+	return { GITLAB_TOKEN: readToken, GITLAB_HOST: process.env.CI_SERVER_URL };
+}
+
+/** Partition project labels into the two groups the triage prompt offers. */
+export function splitRepoLabels(allLabels: RepoLabel[]): {
+	priorityLabels: RepoLabel[];
+	packageLabels: RepoLabel[];
+} {
+	return {
+		priorityLabels: allLabels.filter((l) => /^- P\d/.test(l.name)),
+		packageLabels: allLabels.filter((l) => l.name.startsWith('pkg:')),
+	};
+}
+
 /**
  * Run glab with an explicit token, so read and write credentials stay
- * separated the same way they are on the GitHub side. The token goes through
+ * separated. The token goes through
  * the environment rather than argv, so it never lands in a process listing or
  * in the error message below.
  */
@@ -47,9 +112,7 @@ async function glab(args: string[], token: string): Promise<string> {
  * everything in git.ts redacts it back out before logging.
  */
 function remoteUrl(repo: string, token: string): string {
-	// CI_SERVER_URL, not CI_SERVER_HOST: the latter is host-only, so a
-	// self-hosted instance on http or a non-default port would be unreachable.
-	const url = new URL(`${process.env.CI_SERVER_URL || 'https://gitlab.com'}/${repo}.git`);
+	const url = new URL(`${serverUrl()}/${repo}.git`);
 	url.username = 'oauth2';
 	url.password = token;
 	return url.toString();
@@ -90,12 +153,12 @@ export async function fetchIssueDetails(
 		// No glab subcommand lists issue notes — `issue note` only creates one —
 		// so this read goes through the API passthrough.
 		//
-		// sort=asc: GitLab returns notes newest-first, GitHub returns comments
-		// oldest-first, and every caller assumes the GitHub order.
+		// sort=asc: GitLab returns notes newest-first, and every caller here
+		// assumes oldest-first — verify-fix reads the last entry as the reporter's
+		// latest word.
 		// --paginate: with sort=asc a single page would be the *oldest* 100, and
-		// GitLab counts its system notes against that budget while GitHub's
-		// comments endpoint excludes them — so a busy issue would lose exactly
-		// the recent comments verify-fix needs.
+		// GitLab counts its system notes against that budget — so a busy issue
+		// would lose exactly the recent comments verify-fix needs.
 		// --output ndjson: --paginate writes one JSON array per page back to back,
 		// which is not parseable as a whole. ndjson makes the page boundaries
 		// invisible.
@@ -120,13 +183,13 @@ export async function fetchIssueDetails(
 		author: { login: issue.author?.username },
 		labels: (issue.labels ?? []).map((name: string) => ({ name })),
 		createdAt: issue.created_at,
-		// GitLab says "opened"; GitHub says "open".
+		// Normalise to "open"; the handlers and prompts are written against that.
 		state: issue.state === 'opened' ? 'open' : issue.state,
 		number: issue.iid,
 		url: issue.web_url,
 		comments: notes
-			// System notes are activity entries ("added ~bug label"). GitHub's
-			// comments endpoint does not return those, so drop them for parity.
+			// System notes are activity entries ("added ~bug label"), not
+			// something a person wrote, so they are not conversation.
 			.filter((n) => !n.system)
 			.map((n) => ({
 				author: { login: n.author?.username },
@@ -176,9 +239,9 @@ export async function addLabels(
 }
 
 /**
- * Label a merge request. Separate from addLabels because GitHub numbers issues
- * and PRs in one sequence while GitLab gives merge requests their own iid —
- * `glab issue update <mr iid>` would label an unrelated issue.
+ * Label a merge request. Separate from addLabels because merge requests carry
+ * their own iid sequence — `glab issue update <mr iid>` would silently label an
+ * unrelated issue.
  */
 export async function addPullRequestLabels(
 	repo: string,
@@ -203,8 +266,8 @@ export async function removeLabel(
 }
 
 /**
- * Swap one triage label for another. Unlike the GitHub side this is a single
- * request, so the issue is never briefly left with neither label.
+ * Swap one triage label for another. One request, so the issue is never briefly
+ * left with neither label.
  */
 export async function swapLabel(
 	repo: string,

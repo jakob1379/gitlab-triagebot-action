@@ -1,6 +1,6 @@
 /**
- * Plain git operations. Nothing here is forge-specific — both github.ts and
- * gitlab.ts push with their own authenticated remote URL.
+ * Plain git operations. Nothing here is GitLab-specific; gitlab.ts supplies
+ * the authenticated remote URL.
  */
 
 import { execFile as execFileCb } from 'node:child_process';

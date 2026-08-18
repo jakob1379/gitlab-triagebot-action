@@ -9,7 +9,7 @@ Develop and verify a fix for a diagnosed bug in triagebot-action.
 ## Prerequisites
 
 - **`triageDir`** — Directory with the reproduction.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 - **`report.md`** — From previous steps.
 
 ## Step 1: Review the Diagnosis
@@ -39,7 +39,7 @@ Key locations:
 
 - `src/router.ts` — FSM routing logic
 - `src/labels.ts` — label management
-- `src/github.ts` — GitHub API calls
+- `src/gitlab.ts` — GitLab API calls
 - `src/handlers/*.ts` — handler logic and LLM prompts
 
 ## Step 3: Rebuild and Verify

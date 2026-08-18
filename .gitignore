@@ -1,4 +1,5 @@
 node_modules/
+dist/
 .gitlab-ci-local/
 *.tgz
 .pnpm-store/
