@@ -7,18 +7,28 @@ import { afterEach, describe, it } from 'node:test';
 import type { ActionContext } from '../../src/context.ts';
 import { handleTriage } from '../../src/handlers/triage.ts';
 import { labelConfigFromInputs } from '../../src/labels.ts';
+import { type GlabRoute, type GlabStub, ndjson, stubGlab } from '../helpers/glab-stub.ts';
 
 const originalCwd = process.cwd();
 const originalFetch = globalThis.fetch;
 const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
 const originalPath = process.env.PATH;
+const originalServerUrl = process.env.CI_SERVER_URL;
+const originalDefaultBranch = process.env.CI_DEFAULT_BRANCH;
 let tempDir: string | null = null;
+let glab: GlabStub | null = null;
 
 afterEach(() => {
 	process.chdir(originalCwd);
 	globalThis.fetch = originalFetch;
 	if (originalAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 	else process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+	if (originalServerUrl === undefined) delete process.env.CI_SERVER_URL;
+	else process.env.CI_SERVER_URL = originalServerUrl;
+	if (originalDefaultBranch === undefined) delete process.env.CI_DEFAULT_BRANCH;
+	else process.env.CI_DEFAULT_BRANCH = originalDefaultBranch;
+	glab?.restore();
+	glab = null;
 	if (originalPath === undefined) delete process.env.PATH;
 	else process.env.PATH = originalPath;
 	if (tempDir) {
@@ -27,6 +37,8 @@ afterEach(() => {
 	}
 });
 
+const REPO = 'grp/proj';
+
 function run(command: string, args: string[], cwd: string): void {
 	const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
 	assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -34,8 +46,8 @@ function run(command: string, args: string[], cwd: string): void {
 
 function setupRepo(): string {
 	tempDir = mkdtempSync(join(tmpdir(), 'triagebot-e2e-'));
-	mkdirSync(join(tempDir, '.agents', 'skills', 'triage'), { recursive: true });
 	const skillDir = join(tempDir, '.agents', 'skills', 'triage');
+	mkdirSync(skillDir, { recursive: true });
 	writeFileSync(
 		join(skillDir, 'SKILL.md'),
 		'---\nname: triage\ndescription: Triage a bug report.\n---\n\n# Triage\n',
@@ -56,19 +68,20 @@ function setupRepo(): string {
 	return skillDir;
 }
 
+/**
+ * Points CI_SERVER_URL at a local bare repo so gitPush is exercised for real.
+ * gitlab.ts builds `${CI_SERVER_URL}/${repo}.git` and sets credentials on it;
+ * a file: URL drops the credentials and stays usable.
+ *
+ * The bare repo lives inside .git so the `git add -A` in gitCommit does not
+ * sweep it into the fixture's own commit.
+ */
 function configureLocalPushRemote(): void {
 	assert.ok(tempDir);
-	const remoteDir = join(tempDir, '.git', 'remote.git');
-	run('git', ['init', '--bare', remoteDir], tempDir);
-	run(
-		'git',
-		[
-			'config',
-			`url.file://${remoteDir}.insteadOf`,
-			'https://x-access-token:write-token@github.com/withastro/astro.git',
-		],
-		tempDir,
-	);
+	const serverDir = join(tempDir, '.git', 'remote');
+	mkdirSync(join(serverDir, 'grp'), { recursive: true });
+	run('git', ['init', '--bare', join(serverDir, 'grp', 'proj.git')], tempDir);
+	process.env.CI_SERVER_URL = `file://${serverDir}`;
 }
 
 function installFakePnpm(url: string): void {
@@ -81,7 +94,7 @@ function installFakePnpm(url: string): void {
 		`#!/bin/sh\nprintf '%s' '{"packages":[{"url":"${url}"}]}' > preview-release.json\nexit 0\n`,
 	);
 	chmodSync(pnpmPath, 0o755);
-	process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+	process.env.PATH = `${binDir}:${process.env.PATH}`;
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -146,329 +159,250 @@ function anthropicStream(toolInput: unknown): Response {
 	);
 }
 
-function jsonResponse(body: unknown): Response {
-	return new Response(JSON.stringify(body), {
-		status: 200,
-		headers: { 'content-type': 'application/json' },
-	});
+const ISSUE = JSON.stringify({
+	title: 'Example issue',
+	description: 'Issue body',
+	author: { username: 'reporter' },
+	labels: ['triage: needs triage'],
+	created_at: '2026-01-01T00:00:00Z',
+	state: 'opened',
+	iid: 123,
+	web_url: 'https://gitlab.example.com/grp/proj/-/issues/123',
+});
+
+const PROJECT_LABELS = ndjson([
+	{ name: '- P3: minor bug', description: 'Minor bug' },
+	{ name: 'pkg: astro', description: 'Core package' },
+]);
+
+/** The forge reads and writes every triage run makes, regardless of outcome. */
+function baseRoutes(): GlabRoute[] {
+	return [
+		{ match: '^issue view 123\\b', stdout: ISSUE },
+		{ match: '/issues/123/notes', stdout: ndjson([]) },
+		{ match: '/labels\\?', stdout: PROJECT_LABELS },
+		{ match: '^issue note 123\\b' },
+		{ match: '^issue update 123\\b' },
+	];
+}
+
+/** Bodies of the notes posted to the issue, in order. */
+function postedNotes(stub: GlabStub): string[] {
+	return stub
+		.argv()
+		.filter((a) => a[0] === 'issue' && a[1] === 'note')
+		.map((a) => a[a.indexOf('--message') + 1]);
+}
+
+/**
+ * Label mutations on the issue. GitLab does a swap in one request, so both the
+ * added and removed sides of a transition arrive together.
+ */
+function labelUpdates(stub: GlabStub): Array<{ add: string[]; remove: string[] }> {
+	return stub
+		.argv()
+		.filter((a) => a[0] === 'issue' && a[1] === 'update')
+		.map((a) => ({
+			add: a.includes('--label') ? a[a.indexOf('--label') + 1].split(',') : [],
+			remove: a.includes('--unlabel') ? a[a.indexOf('--unlabel') + 1].split(',') : [],
+		}));
+}
+
+function contextFor(triageSkill: string, overrides: Partial<ActionContext> = {}): ActionContext {
+	return {
+		repo: REPO,
+		readToken: 'read-token',
+		writeToken: 'write-token',
+		anthropicApiKey: 'test-key',
+		cloudflareApiKey: null,
+		cloudflareAccountId: null,
+		triageSkill,
+		prSkill: null,
+		prSkillName: 'pr-writer',
+		autoPrOnFix: false,
+		buildCommand: null,
+		triageModel: 'anthropic/claude-sonnet-4-6',
+		verificationModel: 'anthropic/claude-sonnet-4-6',
+		labels: labelConfigFromInputs(() => ''),
+		botLogins: ['project_1_bot_abc'],
+		...overrides,
+	};
 }
 
 describe('mocked triage flow', () => {
-	it('runs an opened issue through unable-to-reproduce without real LLM or GitHub calls', async () => {
+	it('runs an opened issue through unable-to-reproduce without real LLM or forge calls', async () => {
 		const triageSkill = setupRepo();
 		process.env.ANTHROPIC_API_KEY = 'test-key';
-		const comments: string[] = [];
-		const addedLabels: string[][] = [];
-		let removedLabel: string | null = null;
+		glab = stubGlab(baseRoutes());
 		let anthropicCalls = 0;
 
-		globalThis.fetch = async (input, init) => {
+		globalThis.fetch = async (input) => {
 			const url = String(input);
-			if (url.startsWith('https://api.anthropic.com/')) {
-				anthropicCalls += 1;
-				if (anthropicCalls > 5) {
-					throw new Error('Too many mocked Anthropic calls');
-				}
-				if (anthropicCalls === 1) {
-					return anthropicStream({
-						reproducible: false,
-						skipped: false,
-						skippedReason: null,
-					});
-				}
-				return anthropicStream({
-					result:
-						'- **Reproduced:** No\n- **Exploration:** No\n- **Unit Test:** No\n- **Priority:** Priority P3: Minor bug.\n',
-				});
+			if (!url.startsWith('https://api.anthropic.com/')) {
+				throw new Error(`Unexpected fetch: ${url}`);
 			}
-
-			if (url.endsWith('/issues/123')) {
-				return jsonResponse({
-					title: 'Example issue',
-					body: 'Issue body',
-					user: { login: 'reporter' },
-					labels: [{ name: 'triage: needs triage' }],
-					created_at: '2026-01-01T00:00:00Z',
-					state: 'open',
-					number: 123,
-					html_url: 'https://github.com/withastro/astro/issues/123',
-				});
+			anthropicCalls += 1;
+			if (anthropicCalls > 5) throw new Error('Too many mocked Anthropic calls');
+			if (anthropicCalls === 1) {
+				return anthropicStream({ reproducible: false, skipped: false, skippedReason: null });
 			}
-			if (url.endsWith('/issues/123/comments?per_page=100')) return jsonResponse([]);
-			if (url.endsWith('/labels?per_page=100&page=1')) {
-				return jsonResponse([
-					{ name: '- P3: minor bug', description: 'Minor bug' },
-					{ name: 'pkg: astro', description: 'Core package' },
-				]);
-			}
-			if (url.endsWith('/issues/123/comments') && init?.method === 'POST') {
-				comments.push(JSON.parse(String(init.body)).body);
-				return jsonResponse({});
-			}
-			if (url.includes('/issues/123/labels/') && init?.method === 'DELETE') {
-				removedLabel = decodeURIComponent(url.split('/').at(-1) ?? '');
-				return new Response('', { status: 200 });
-			}
-			if (url.endsWith('/issues/123/labels') && init?.method === 'POST') {
-				addedLabels.push(JSON.parse(String(init.body)).labels);
-				return jsonResponse([]);
-			}
-			throw new Error(`Unexpected fetch: ${url}`);
+			return anthropicStream({
+				result:
+					'- **Reproduced:** No\n- **Exploration:** No\n- **Unit Test:** No\n- **Priority:** Priority P3: Minor bug.\n',
+			});
 		};
 
-		const ctx: ActionContext = {
-			repo: 'withastro/astro',
-			readToken: 'read-token',
-			writeToken: 'write-token',
-			anthropicApiKey: 'test-key',
-			triageSkill,
-			prSkill: null,
-			prSkillName: 'astro-pr-writer',
-			autoPrOnFix: false,
-			buildCommand: null,
-			triageModel: 'anthropic/claude-sonnet-4-6',
-			verificationModel: 'anthropic/claude-sonnet-4-6',
-			labels: labelConfigFromInputs(() => ''),
-			botLogins: ['github-actions[bot]', 'astrobot-houston'],
-		};
-
-		await withTimeout(handleTriage(123, ctx), 10_000);
+		await withTimeout(handleTriage(123, contextFor(triageSkill)), 10_000);
 
 		assert.equal(anthropicCalls, 2);
-		assert.equal(comments.length, 1);
-		assert.match(comments[0], /Reproduced/);
-		assert.equal(removedLabel, 'triage: needs triage');
-		assert.deepEqual(addedLabels, [['triage: unable to reproduce']]);
+		const notes = postedNotes(glab);
+		assert.equal(notes.length, 1);
+		assert.match(notes[0], /Reproduced/);
+		assert.deepEqual(labelUpdates(glab), [
+			{ add: ['triage: unable to reproduce'], remove: ['triage: needs triage'] },
+		]);
 	});
 
 	it('publishes a preview release for fixed package changes before marking fix pending', async () => {
 		const triageSkill = setupRepo();
 		configureLocalPushRemote();
 		installFakePnpm('https://pkg.pr.new/astro@test123');
+		glab = stubGlab(baseRoutes());
 		writeFileSync(
 			join(tempDir as string, 'packages', 'astro', 'src', 'index.ts'),
 			'export const value = 2;\n',
 		);
 
 		process.env.ANTHROPIC_API_KEY = 'test-key';
-		const comments: string[] = [];
-		const addedLabels: string[][] = [];
-		const removedLabels: string[] = [];
 		let anthropicCalls = 0;
 		let commentPromptIncludedPreviewUrl = false;
 
 		globalThis.fetch = async (input, init) => {
 			const url = String(input);
-			if (url.startsWith('https://api.anthropic.com/')) {
-				anthropicCalls += 1;
-				const body = JSON.parse(String(init?.body ?? '{}'));
-				if (anthropicCalls === 1) {
-					return anthropicStream({ reproducible: true, skipped: false, skippedReason: null });
-				}
-				if (anthropicCalls === 2) return anthropicStream({ confidence: 'high' });
-				if (anthropicCalls === 3) return anthropicStream({ verdict: 'bug', confidence: 'high' });
-				if (anthropicCalls === 4) {
-					return anthropicStream({ fixed: true, commitMessage: 'fix: update astro package' });
-				}
-				if (anthropicCalls === 5) {
-					commentPromptIncludedPreviewUrl = JSON.stringify(body).includes(
-						'https://pkg.pr.new/astro@test123',
-					);
-					return anthropicStream({
-						result:
-							'- **Reproduced:** Yes\n- **Exploration:** Yes\n- **Unit Test:** Yes\n- **Priority:** Priority P3: Minor bug.\n\n### Try this fix\n\nnpm i https://pkg.pr.new/astro@test123\n',
-					});
-				}
-				if (anthropicCalls === 6) {
-					return anthropicStream({ priority: '- P3: minor bug', packages: ['pkg: astro'] });
-				}
-				throw new Error('Too many mocked Anthropic calls');
+			if (!url.startsWith('https://api.anthropic.com/')) {
+				throw new Error(`Unexpected fetch: ${url}`);
 			}
-
-			if (url.endsWith('/issues/123')) {
-				return jsonResponse({
-					title: 'Example issue',
-					body: 'Issue body',
-					user: { login: 'reporter' },
-					labels: [{ name: 'triage: needs triage' }],
-					created_at: '2026-01-01T00:00:00Z',
-					state: 'open',
-					number: 123,
-					html_url: 'https://github.com/withastro/astro/issues/123',
+			anthropicCalls += 1;
+			if (anthropicCalls === 1) {
+				return anthropicStream({ reproducible: true, skipped: false, skippedReason: null });
+			}
+			if (anthropicCalls === 2) return anthropicStream({ confidence: 'high' });
+			if (anthropicCalls === 3) return anthropicStream({ verdict: 'bug', confidence: 'high' });
+			if (anthropicCalls === 4) {
+				return anthropicStream({ fixed: true, commitMessage: 'fix: update astro package' });
+			}
+			if (anthropicCalls === 5) {
+				commentPromptIncludedPreviewUrl = JSON.stringify(
+					JSON.parse(String(init?.body ?? '{}')),
+				).includes('https://pkg.pr.new/astro@test123');
+				return anthropicStream({
+					result:
+						'- **Reproduced:** Yes\n- **Exploration:** Yes\n- **Unit Test:** Yes\n- **Priority:** Priority P3: Minor bug.\n\n### Try this fix\n\nnpm i https://pkg.pr.new/astro@test123\n',
 				});
 			}
-			if (url.endsWith('/issues/123/comments?per_page=100')) return jsonResponse([]);
-			if (url.endsWith('/labels?per_page=100&page=1')) {
-				return jsonResponse([
-					{ name: '- P3: minor bug', description: 'Minor bug' },
-					{ name: 'pkg: astro', description: 'Core package' },
-				]);
+			if (anthropicCalls === 6) {
+				return anthropicStream({ priority: '- P3: minor bug', packages: ['pkg: astro'] });
 			}
-			if (url.endsWith('/issues/123/comments') && init?.method === 'POST') {
-				comments.push(JSON.parse(String(init.body)).body);
-				return jsonResponse({});
-			}
-			if (url.includes('/issues/123/labels/') && init?.method === 'DELETE') {
-				removedLabels.push(decodeURIComponent(url.split('/').at(-1) ?? ''));
-				return new Response('', { status: 200 });
-			}
-			if (url.endsWith('/issues/123/labels') && init?.method === 'POST') {
-				addedLabels.push(JSON.parse(String(init.body)).labels);
-				return jsonResponse([]);
-			}
-			throw new Error(`Unexpected fetch: ${url}`);
+			throw new Error('Too many mocked Anthropic calls');
 		};
 
-		const ctx: ActionContext = {
-			repo: 'withastro/astro',
-			readToken: 'read-token',
-			writeToken: 'write-token',
-			anthropicApiKey: 'test-key',
-			triageSkill,
-			prSkill: null,
-			prSkillName: 'astro-pr-writer',
-			autoPrOnFix: false,
-			buildCommand: null,
-			triageModel: 'anthropic/claude-sonnet-4-6',
-			verificationModel: 'anthropic/claude-sonnet-4-6',
-			labels: labelConfigFromInputs(() => ''),
-			botLogins: ['github-actions[bot]', 'astrobot-houston'],
-		};
-
-		await withTimeout(handleTriage(123, ctx), 20_000);
+		await withTimeout(handleTriage(123, contextFor(triageSkill)), 20_000);
 
 		assert.equal(anthropicCalls, 6);
 		assert.equal(commentPromptIncludedPreviewUrl, true);
-		assert.equal(comments.length, 1);
-		assert.match(comments[0], /https:\/\/pkg\.pr\.new\/astro@test123/);
-		assert.deepEqual(removedLabels, ['triage: needs triage']);
-		assert.deepEqual(addedLabels, [['triage: fix pending'], ['- P3: minor bug', 'pkg: astro']]);
+		const notes = postedNotes(glab);
+		assert.equal(notes.length, 1);
+		assert.match(notes[0], /https:\/\/pkg\.pr\.new\/astro@test123/);
+		assert.deepEqual(labelUpdates(glab), [
+			{ add: ['triage: fix pending'], remove: ['triage: needs triage'] },
+			{ add: ['- P3: minor bug', 'pkg: astro'], remove: [] },
+		]);
 	});
 
-	it('opens a pull request directly and marks fix verified when auto-pr-on-fix is enabled', async () => {
+	it('opens a merge request directly and marks fix verified when auto-pr-on-fix is enabled', async () => {
 		const triageSkill = setupRepo();
 		configureLocalPushRemote();
+		// Not "main": pinning it to something the fallback would never produce is
+		// what makes the --target-branch assertion below test the wiring.
+		process.env.CI_DEFAULT_BRANCH = 'trunk';
+		glab = stubGlab([
+			...baseRoutes(),
+			{
+				// Checked for an existing MR, then read back after creation.
+				match: '^mr list --source-branch triagebot/fix-123\\b',
+				stdout: [
+					'[]',
+					JSON.stringify([
+						{ iid: 456, web_url: 'https://gitlab.example.com/grp/proj/-/merge_requests/456' },
+					]),
+				],
+			},
+			{ match: '^mr create\\b' },
+			{ match: '^mr update 456\\b' },
+		]);
 		writeFileSync(
 			join(tempDir as string, 'packages', 'astro', 'src', 'index.ts'),
 			'export const value = 2;\n',
 		);
 
 		process.env.ANTHROPIC_API_KEY = 'test-key';
-		const comments: string[] = [];
-		const addedLabels: string[][] = [];
-		const prLabels: string[][] = [];
-		const removedLabels: string[] = [];
 		let anthropicCalls = 0;
-		let createdPrHead: string | null = null;
-		let createdPrBase: string | null = null;
 
-		globalThis.fetch = async (input, init) => {
+		globalThis.fetch = async (input) => {
 			const url = String(input);
-			if (url.startsWith('https://api.anthropic.com/')) {
-				anthropicCalls += 1;
-				if (anthropicCalls === 1) {
-					return anthropicStream({ reproducible: true, skipped: false, skippedReason: null });
-				}
-				if (anthropicCalls === 2) return anthropicStream({ confidence: 'high' });
-				if (anthropicCalls === 3) return anthropicStream({ verdict: 'bug', confidence: 'high' });
-				if (anthropicCalls === 4) {
-					return anthropicStream({ fixed: true, commitMessage: 'fix: update astro package' });
-				}
-				if (anthropicCalls === 5) {
-					return anthropicStream({ title: 'Fix the astro package', body: 'Closes #123' });
-				}
-				if (anthropicCalls === 6) {
-					return anthropicStream({
-						result:
-							'- **Reproduced:** Yes\n- **Exploration:** Yes\n- **Unit Test:** Yes\n- **Priority:** Priority P3: Minor bug.\n',
-					});
-				}
-				if (anthropicCalls === 7) {
-					return anthropicStream({ priority: '- P3: minor bug', packages: ['pkg: astro'] });
-				}
-				throw new Error('Too many mocked Anthropic calls');
+			if (!url.startsWith('https://api.anthropic.com/')) {
+				throw new Error(`Unexpected fetch: ${url}`);
 			}
-
-			if (url.endsWith('/issues/123')) {
-				return jsonResponse({
-					title: 'Example issue',
-					body: 'Issue body',
-					user: { login: 'reporter' },
-					labels: [{ name: 'triage: needs triage' }],
-					created_at: '2026-01-01T00:00:00Z',
-					state: 'open',
-					number: 123,
-					html_url: 'https://github.com/withastro/astro/issues/123',
+			anthropicCalls += 1;
+			if (anthropicCalls === 1) {
+				return anthropicStream({ reproducible: true, skipped: false, skippedReason: null });
+			}
+			if (anthropicCalls === 2) return anthropicStream({ confidence: 'high' });
+			if (anthropicCalls === 3) return anthropicStream({ verdict: 'bug', confidence: 'high' });
+			if (anthropicCalls === 4) {
+				return anthropicStream({ fixed: true, commitMessage: 'fix: update astro package' });
+			}
+			if (anthropicCalls === 5) {
+				return anthropicStream({ title: 'Fix the astro package', body: 'Closes #123' });
+			}
+			if (anthropicCalls === 6) {
+				return anthropicStream({
+					result:
+						'- **Reproduced:** Yes\n- **Exploration:** Yes\n- **Unit Test:** Yes\n- **Priority:** Priority P3: Minor bug.\n',
 				});
 			}
-			if (url.endsWith('/issues/123/comments?per_page=100')) return jsonResponse([]);
-			if (url.includes('/pulls?head=withastro%3Atriagebot%2Ffix-123&state=open')) {
-				return jsonResponse([]);
+			if (anthropicCalls === 7) {
+				return anthropicStream({ priority: '- P3: minor bug', packages: ['pkg: astro'] });
 			}
-			if (url.endsWith('/pulls') && init?.method === 'POST') {
-				const payload = JSON.parse(String(init.body));
-				createdPrHead = payload.head;
-				createdPrBase = payload.base;
-				return jsonResponse({
-					number: 456,
-					html_url: 'https://github.com/withastro/astro/pull/456',
-				});
-			}
-			if (url.endsWith('/issues/456/labels') && init?.method === 'POST') {
-				prLabels.push(JSON.parse(String(init.body)).labels);
-				return jsonResponse([]);
-			}
-			if (url.endsWith('/labels?per_page=100&page=1')) {
-				return jsonResponse([
-					{ name: '- P3: minor bug', description: 'Minor bug' },
-					{ name: 'pkg: astro', description: 'Core package' },
-				]);
-			}
-			if (url.endsWith('/issues/123/comments') && init?.method === 'POST') {
-				comments.push(JSON.parse(String(init.body)).body);
-				return jsonResponse({});
-			}
-			if (url.includes('/issues/123/labels/') && init?.method === 'DELETE') {
-				removedLabels.push(decodeURIComponent(url.split('/').at(-1) ?? ''));
-				return new Response('', { status: 200 });
-			}
-			if (url.endsWith('/issues/123/labels') && init?.method === 'POST') {
-				addedLabels.push(JSON.parse(String(init.body)).labels);
-				return jsonResponse([]);
-			}
-			throw new Error(`Unexpected fetch: ${url}`);
+			throw new Error('Too many mocked Anthropic calls');
 		};
 
-		const ctx: ActionContext = {
-			repo: 'withastro/astro',
-			readToken: 'read-token',
-			writeToken: 'write-token',
-			anthropicApiKey: 'test-key',
-			triageSkill,
-			prSkill: null,
-			prSkillName: 'astro-pr-writer',
-			autoPrOnFix: true,
-			buildCommand: null,
-			triageModel: 'anthropic/claude-sonnet-4-6',
-			verificationModel: 'anthropic/claude-sonnet-4-6',
-			labels: labelConfigFromInputs(() => ''),
-			botLogins: ['github-actions[bot]', 'astrobot-houston'],
-		};
+		await withTimeout(handleTriage(123, contextFor(triageSkill, { autoPrOnFix: true })), 20_000);
 
-		await withTimeout(handleTriage(123, ctx), 20_000);
-
-		// PR content generated, then comment, then label selection: 7 LLM calls.
+		// MR content generated, then comment, then label selection: 7 LLM calls.
 		assert.equal(anthropicCalls, 7);
-		// A PR was opened directly from the fix branch against main.
-		assert.equal(createdPrHead, 'triagebot/fix-123');
-		assert.equal(createdPrBase, 'main');
-		// The PR got the fix-verified PR label.
-		assert.deepEqual(prLabels, [['fix verified']]);
+
+		// An MR was opened directly from the fix branch against the default branch,
+		// which gitlab.ts resolves from CI_DEFAULT_BRANCH.
+		const create = glab.calls().find((c) => c.startsWith('mr create'));
+		assert.ok(create, 'expected an mr create call');
+		assert.match(create, /--source-branch triagebot\/fix-123\b/);
+		assert.match(create, /--target-branch trunk\b/);
+
+		// The MR got the fix-verified label, on `mr update` rather than
+		// `issue update` — merge requests have their own iid sequence.
+		const mrLabel = glab.argv().find((a) => a[0] === 'mr' && a[1] === 'update');
+		assert.deepEqual(mrLabel?.slice(0, 5), ['mr', 'update', '456', '--label', 'fix verified']);
+
 		// The issue moved straight to fix verified (no preview => not fix pending).
-		assert.deepEqual(removedLabels, ['triage: needs triage']);
-		assert.deepEqual(addedLabels, [['triage: fix verified'], ['- P3: minor bug', 'pkg: astro']]);
-		// The reporter comment links the opened PR.
-		assert.equal(comments.length, 1);
-		assert.match(comments[0], /pull\/456/);
+		assert.deepEqual(labelUpdates(glab), [
+			{ add: ['triage: fix verified'], remove: ['triage: needs triage'] },
+			{ add: ['- P3: minor bug', 'pkg: astro'], remove: [] },
+		]);
+
+		// The reporter comment links the opened MR.
+		const notes = postedNotes(glab);
+		assert.equal(notes.length, 1);
+		assert.match(notes[0], /merge_requests\/456/);
 	});
 });

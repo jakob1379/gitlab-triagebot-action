@@ -1,23 +1,62 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import type { ActionContext } from '../../src/context.ts';
 import { handleVerifyFix } from '../../src/handlers/verify-fix.ts';
 import { labelConfigFromInputs } from '../../src/labels.ts';
+import { type GlabStub, ndjson, stubGlab } from '../helpers/glab-stub.ts';
 
 const originalFetch = globalThis.fetch;
 const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
+const originalServerUrl = process.env.CI_SERVER_URL;
+const originalDefaultBranch = process.env.CI_DEFAULT_BRANCH;
+let tempDir: string | null = null;
+let glab: GlabStub | null = null;
 
 afterEach(() => {
 	globalThis.fetch = originalFetch;
 	if (originalAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 	else process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+	if (originalServerUrl === undefined) delete process.env.CI_SERVER_URL;
+	else process.env.CI_SERVER_URL = originalServerUrl;
+	if (originalDefaultBranch === undefined) delete process.env.CI_DEFAULT_BRANCH;
+	else process.env.CI_DEFAULT_BRANCH = originalDefaultBranch;
+	glab?.restore();
+	glab = null;
+	if (tempDir) {
+		rmSync(tempDir, { recursive: true, force: true });
+		tempDir = null;
+	}
 });
 
-function jsonResponse(body: unknown): Response {
-	return new Response(JSON.stringify(body), {
-		status: 200,
-		headers: { 'content-type': 'application/json' },
-	});
+function git(args: string[], cwd: string): void {
+	const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+	assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+/**
+ * Serves the project over a file:// remote so findBranch runs a real
+ * `git ls-remote` instead of being stubbed out. Credentials set on a file: URL
+ * are dropped by the URL parser, so remoteUrl() still produces a usable path.
+ */
+function serveProjectWithBranch(branch: string): void {
+	tempDir = mkdtempSync(join(tmpdir(), 'triagebot-verify-'));
+	const bare = join(tempDir, 'grp', 'proj.git');
+	mkdirSync(join(tempDir, 'grp'), { recursive: true });
+	git(['init', '-q', '--bare', bare], tempDir);
+
+	const work = join(tempDir, 'work');
+	mkdirSync(work);
+	git(['init', '-q', '-b', 'main'], work);
+	git(['config', 'user.email', 'test@example.com'], work);
+	git(['config', 'user.name', 'Test'], work);
+	git(['commit', '-q', '--allow-empty', '-m', 'initial'], work);
+	git(['push', '-q', bare, `main:${branch}`], work);
+
+	process.env.CI_SERVER_URL = `file://${tempDir}`;
 }
 
 function anthropicStream(toolInput: unknown): Response {
@@ -69,115 +108,113 @@ function anthropicStream(toolInput: unknown): Response {
 }
 
 describe('handleVerifyFix integration', () => {
-	it('falls back to legacy flue fix branches and verifies only after PR creation', async () => {
+	it('falls back to legacy flue fix branches and verifies only after MR creation', async () => {
 		process.env.ANTHROPIC_API_KEY = 'test-key';
-		const events: string[] = [];
-		let anthropicCalls = 0;
-		let createdPrHead: string | null = null;
+		// Not "main": pinning it to something the fallback would never produce is
+		// what makes the --target-branch assertion below test the wiring.
+		process.env.CI_DEFAULT_BRANCH = 'trunk';
+		// Only the legacy branch exists, so findBranch has to fall through the
+		// preferred triagebot/ name to reach it.
+		serveProjectWithBranch('flue/fix-123');
 
-		globalThis.fetch = async (input, init) => {
+		let anthropicCalls = 0;
+		globalThis.fetch = async (input) => {
 			const url = String(input);
-			if (url.startsWith('https://api.anthropic.com/')) {
-				anthropicCalls += 1;
-				if (anthropicCalls === 1) {
-					return anthropicStream({
+			if (!url.startsWith('https://api.anthropic.com/')) {
+				throw new Error(`Unexpected fetch: ${url}`);
+			}
+			anthropicCalls += 1;
+			return anthropicCalls === 1
+				? anthropicStream({
 						status: 'confirmed',
 						reasoning: 'The reporter confirmed the fix works.',
-					});
-				}
-				return anthropicStream({
-					title: 'Fix confirmed issue',
-					body: 'Closes #123',
-				});
-			}
+					})
+				: anthropicStream({ title: 'Fix confirmed issue', body: 'Closes #123' });
+		};
 
-			if (url.endsWith('/git/matching-refs/heads/triagebot/fix-123')) {
-				return jsonResponse([]);
-			}
-			if (url.endsWith('/git/matching-refs/heads/flue/fix-123')) {
-				return jsonResponse([{ ref: 'refs/heads/flue/fix-123' }]);
-			}
-			if (url.endsWith('/issues/123')) {
-				return jsonResponse({
+		glab = stubGlab([
+			{
+				match: '^issue view 123\\b',
+				stdout: JSON.stringify({
 					title: 'Example issue',
-					body: 'Issue body',
-					user: { login: 'reporter' },
-					labels: [{ name: 'triage: fix pending' }],
+					description: 'Issue body',
+					author: { username: 'reporter' },
+					labels: ['triage: fix pending'],
 					created_at: '2026-01-01T00:00:00Z',
-					state: 'open',
-					number: 123,
-					html_url: 'https://github.com/withastro/astro/issues/123',
-				});
-			}
-			if (url.endsWith('/issues/123/comments?per_page=100')) {
-				return jsonResponse([
+					state: 'opened',
+					iid: 123,
+					web_url: 'https://gitlab.example.com/grp/proj/-/issues/123',
+				}),
+			},
+			{
+				match: '/issues/123/notes',
+				stdout: ndjson([
 					{
-						user: { login: 'reporter' },
-						author_association: 'CONTRIBUTOR',
+						author: { username: 'reporter' },
 						body: 'I can confirm this fixes the issue.',
 						created_at: '2026-01-01T00:00:00Z',
 					},
-				]);
-			}
-			if (url.includes('/pulls?head=withastro%3Aflue%2Ffix-123&state=open')) {
-				return jsonResponse([]);
-			}
-			if (url.endsWith('/pulls') && init?.method === 'POST') {
-				createdPrHead = JSON.parse(String(init.body)).head;
-				events.push('create-pr');
-				return jsonResponse({
-					number: 456,
-					html_url: 'https://github.com/withastro/astro/pull/456',
-				});
-			}
-			if (url.endsWith('/issues/456/labels') && init?.method === 'POST') {
-				events.push('label-pr');
-				return jsonResponse([]);
-			}
-			if (
-				url.endsWith('/issues/123/labels/triage%3A%20fix%20pending') &&
-				init?.method === 'DELETE'
-			) {
-				events.push('remove-pending');
-				return new Response('', { status: 200 });
-			}
-			if (url.endsWith('/issues/123/labels') && init?.method === 'POST') {
-				const labels = JSON.parse(String(init.body)).labels;
-				if (labels.includes('triage: fix verified')) events.push('add-verified');
-				return jsonResponse([]);
-			}
-			if (url.endsWith('/issues/123/comments') && init?.method === 'POST') {
-				events.push('comment-issue');
-				return jsonResponse({});
-			}
-			throw new Error(`Unexpected fetch: ${url}`);
-		};
+				]),
+			},
+			{
+				// Asked twice: once to check for an existing MR, then again to read
+				// back the one just created, since `mr create` prints no JSON.
+				match: '^mr list --source-branch flue/fix-123\\b',
+				stdout: [
+					'[]',
+					JSON.stringify([
+						{ iid: 456, web_url: 'https://gitlab.example.com/grp/proj/-/merge_requests/456' },
+					]),
+				],
+			},
+			{ match: '^mr create\\b' },
+			{ match: '^mr update 456\\b' },
+			{ match: '^issue update 123\\b' },
+			{ match: '^issue note 123\\b' },
+		]);
 
 		const ctx: ActionContext = {
-			repo: 'withastro/astro',
+			repo: 'grp/proj',
 			readToken: 'read-token',
 			writeToken: 'write-token',
 			anthropicApiKey: 'test-key',
+			cloudflareApiKey: null,
+			cloudflareAccountId: null,
 			triageSkill: '.agents/skills/triage',
 			prSkill: null,
-			prSkillName: 'astro-pr-writer',
+			prSkillName: 'pr-writer',
 			autoPrOnFix: false,
 			buildCommand: null,
 			triageModel: 'anthropic/claude-sonnet-4-6',
 			verificationModel: 'anthropic/claude-sonnet-4-6',
 			labels: labelConfigFromInputs(() => ''),
-			botLogins: ['github-actions[bot]', 'astrobot-houston'],
+			botLogins: ['project_1_bot_abc'],
 		};
 
 		await handleVerifyFix(123, ctx);
 
-		assert.equal(createdPrHead, 'flue/fix-123');
-		assert.deepEqual(events, [
-			'create-pr',
-			'label-pr',
-			'remove-pending',
-			'add-verified',
-			'comment-issue',
-		]);
+		const calls = glab.calls();
+
+		// The MR targets the legacy branch findBranch fell back to.
+		const create = calls.find((c) => c.startsWith('mr create'));
+		assert.ok(create, 'expected an mr create call');
+		assert.match(create, /--source-branch flue\/fix-123\b/);
+		assert.match(create, /--target-branch trunk\b/);
+
+		// Order matters: the issue must not be marked verified before the MR that
+		// verification is claiming exists. Reads are concurrent, so compare only
+		// the writes.
+		assert.deepEqual(
+			calls
+				.filter((c) => /^(mr create|mr update|issue update|issue note)\b/.test(c))
+				.map((c) => c.split(' ').slice(0, 2).join(' ')),
+			['mr create', 'mr update', 'issue update', 'issue note'],
+		);
+
+		// Swapped off fix-pending and onto fix-verified in a single request.
+		const swap = calls.find((c) => c.startsWith('issue update 123'));
+		assert.ok(swap);
+		assert.match(swap, /--label triage: fix verified/);
+		assert.match(swap, /--unlabel triage: fix pending/);
 	});
 });

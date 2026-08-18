@@ -1,6 +1,6 @@
 # Verify
 
-Verify whether a GitHub issue describes an actual bug or a misunderstanding of intended behavior.
+Verify whether a GitLab issue describes an actual bug or a misunderstanding of intended behavior.
 
 **CRITICAL: You MUST always read `report.md` and append to `report.md` before finishing, regardless of outcome. Even if you cannot reach a conclusion — always update `report.md`.**
 
@@ -9,7 +9,7 @@ Verify whether a GitHub issue describes an actual bug or a misunderstanding of i
 ## Prerequisites
 
 - **`triageDir`** — Directory containing the reproduction project.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 - **`report.md`** — File in `triageDir` from previous steps.
 
 ## Overview
@@ -54,10 +54,10 @@ Run `git blame` on relevant lines. Read the full commit message with `git show -
 ### Search Prior Issues and PRs
 
 ```bash
-gh search issues "<keywords>"
-gh search prs "<keywords>"
-gh issue view <number> --comments
-gh pr view <number> --comments
+glab issue list --search "<keywords>"
+glab mr list --search "<keywords>"
+glab issue view <number> --comments
+glab mr view <number> --comments
 ```
 
 If you find a closed issue where a maintainer explained why the behavior is intentional, that is strong evidence.

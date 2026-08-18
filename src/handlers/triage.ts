@@ -12,20 +12,23 @@ import { local } from '@flue/runtime/node';
 import * as v from 'valibot';
 import type { ActionContext } from '../context.ts';
 import { createSession } from '../flue.ts';
+import { gitCommit } from '../git.ts';
 import {
 	addLabels,
+	addPullRequestLabels,
+	agentEnv,
 	createPullRequest,
+	defaultBranch,
 	fetchIssueDetails,
 	fetchRepoLabels,
 	findPullRequest,
-	gitCommit,
 	gitPush,
 	type IssueDetails,
 	type PullRequest,
 	postComment,
 	type RepoLabel,
 	swapLabel,
-} from '../github.ts';
+} from '../gitlab.ts';
 import { currentTriageLabel } from '../labels.ts';
 import { generatePRContent } from '../pr.ts';
 import { generateComment } from './comment.ts';
@@ -58,11 +61,18 @@ function packageDirsFromChangedFiles(changedFiles: string[]): string[] {
 	return [...packageDirs];
 }
 
-async function publishPreviewRelease(session: FlueSession): Promise<PreviewRelease | null> {
+async function publishPreviewRelease(
+	session: FlueSession,
+	baseSha: string,
+): Promise<PreviewRelease | null> {
 	console.info('Preview release: checking changed package directories.');
-	const diffResult = await session.shell('git diff main --name-only');
+	const diffResult = await session.shell(`git diff ${baseSha} --name-only`);
+	if (diffResult.exitCode !== 0) {
+		console.warn('Preview release skipped: git diff failed:', diffResult.stderr);
+		return null;
+	}
 	if (!diffResult.stdout.trim()) {
-		console.info('Preview release skipped: no changed files relative to main.');
+		console.info('Preview release skipped: no changed files since triage started.');
 		return null;
 	}
 
@@ -246,7 +256,7 @@ async function selectTriageLabels(
 	const packageLabelNames = packageLabels.map((l) => l.name);
 
 	const { data: labelResult } = await session.prompt(
-		`Label the following GitHub issue based on the triage report that was already posted.
+		`Label the following GitLab issue based on the triage report that was already posted.
 
 Select labels for this issue from the lists below based on the triage report. Select exactly one priority label (the report's **Priority** section is a strong hint) and 0-3 package labels based on where the issue lives in the monorepo and how it manifests.
 
@@ -315,15 +325,9 @@ export function countTriageFailures(issueDetails: IssueDetails): number {
 		.length;
 }
 
-function currentRunUrl(ctx: ActionContext): string | null {
-	const runId = process.env.GITHUB_RUN_ID;
-	if (!runId) return null;
-	const serverUrl = process.env.GITHUB_SERVER_URL || 'https://github.com';
-	return `${serverUrl}/${ctx.repo}/actions/runs/${runId}`;
-}
-
-function formatFailureComment(error: unknown, attempt: number, ctx: ActionContext): string {
-	const runUrl = currentRunUrl(ctx);
+function formatFailureComment(error: unknown, attempt: number): string {
+	// GitLab hands the job the full pipeline URL, so there is nothing to build.
+	const runUrl = process.env.CI_PIPELINE_URL;
 	const message = error instanceof Error ? error.message : String(error);
 	const retryMessage =
 		attempt >= MAX_TRIAGE_FAILURES
@@ -354,12 +358,7 @@ async function recordTriageFailure(
 		ctx.labels,
 	);
 
-	await postComment(
-		ctx.repo,
-		issueNumber,
-		formatFailureComment(error, attempt, ctx),
-		ctx.writeToken,
-	);
+	await postComment(ctx.repo, issueNumber, formatFailureComment(error, attempt), ctx.writeToken);
 	await swapLabel(ctx.repo, issueNumber, currentLabel, ctx.labels.failed, ctx.writeToken);
 }
 
@@ -393,17 +392,21 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	const agent = createAgent(() => ({
 		sandbox: local({
+			// flue's local() sandbox passes through only what it is handed, so
+			// enumerate the CI context the skills may want. agentEnv supplies the
+			// glab credentials on top.
 			env: {
-				GH_TOKEN: ctx.readToken,
-				GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
-				GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
-				GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
-				GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
-				GITHUB_ACTOR_ID: process.env.GITHUB_ACTOR_ID,
-				GITHUB_SHA: process.env.GITHUB_SHA,
-				GITHUB_REF_NAME: process.env.GITHUB_REF_NAME,
-				GITHUB_OUTPUT: process.env.GITHUB_OUTPUT,
-				GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+				...agentEnv(ctx.readToken),
+				GITLAB_CI: process.env.GITLAB_CI,
+				CI_PROJECT_PATH: process.env.CI_PROJECT_PATH,
+				CI_PROJECT_URL: process.env.CI_PROJECT_URL,
+				CI_DEFAULT_BRANCH: process.env.CI_DEFAULT_BRANCH,
+				CI_PIPELINE_ID: process.env.CI_PIPELINE_ID,
+				CI_PIPELINE_URL: process.env.CI_PIPELINE_URL,
+				CI_JOB_ID: process.env.CI_JOB_ID,
+				CI_COMMIT_SHA: process.env.CI_COMMIT_SHA,
+				CI_COMMIT_REF_NAME: process.env.CI_COMMIT_REF_NAME,
+				TRIGGER_PAYLOAD: process.env.TRIGGER_PAYLOAD,
 			},
 		}),
 		model: ctx.triageModel,
@@ -411,9 +414,25 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	const session = await createSession(agent);
 
+	// Baseline for "what did the agent change". Must be a commit, not a branch
+	// name: GitLab CI checks out a detached HEAD with no local branch refs, so
+	// `git diff main` is a fatal error there and would silently look like an
+	// empty diff.
+	const baseShaResult = await session.shell('git rev-parse HEAD');
+	const baseSha = baseShaResult.stdout.trim();
+	// Unguarded, an empty baseSha turns the diff below into working-tree-vs-index.
+	// gitCommit stages and commits, so a run that found a fix would diff clean and
+	// be reported as "no fix found".
+	if (baseShaResult.exitCode !== 0 || !baseSha) {
+		throw new Error(`Could not resolve HEAD before triage: ${baseShaResult.stderr.trim()}`);
+	}
+
 	// Create the fix branch so the agent's changes don't land on main.
 	// This is needed for both initial triage and retriage.
-	await session.shell(`git checkout -B ${JSON.stringify(branch)}`);
+	const checkout = await session.shell(`git checkout -B ${JSON.stringify(branch)}`);
+	if (checkout.exitCode !== 0) {
+		throw new Error(`Could not create fix branch ${branch}: ${checkout.stderr.trim()}`);
+	}
 
 	// Run the pipeline.
 	const triageResult = await runTriagePipeline(session, issueNumber, issueDetails);
@@ -422,10 +441,19 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	// Push fix branch if there are changes.
 	{
-		const diff = await session.shell('git diff main --stat');
+		// Checked, not just read: on a failure stdout is empty, which is
+		// indistinguishable from "the agent changed nothing" and would report a run
+		// that did find a fix as "no fix found".
+		const diff = await session.shell(`git diff ${baseSha} --stat`);
+		if (diff.exitCode !== 0) {
+			throw new Error(`Could not diff against ${baseSha}: ${diff.stderr.trim()}`);
+		}
 		console.info(`Triage diff stat present: ${Boolean(diff.stdout.trim())}`);
 		if (diff.stdout.trim()) {
 			const status = await session.shell('git status --porcelain');
+			if (status.exitCode !== 0) {
+				throw new Error(`Could not read the worktree status: ${status.stderr.trim()}`);
+			}
 			console.info(`Triage worktree status present: ${Boolean(status.stdout.trim())}`);
 			if (status.stdout.trim()) {
 				const defaultMessage = triageResult.fixed
@@ -464,14 +492,19 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 				);
 				openedPr = await createPullRequest(
 					ctx.repo,
-					{ head: branch, base: 'main', title: prContent.title, body: prContent.body },
+					{ head: branch, base: defaultBranch(), title: prContent.title, body: prContent.body },
 					ctx.writeToken,
 				);
 				console.info(`Auto-PR created: ${openedPr.html_url}`);
-				await addLabels(ctx.repo, openedPr.number, [ctx.labels.prFixVerified], ctx.writeToken);
+				await addPullRequestLabels(
+					ctx.repo,
+					openedPr.number,
+					[ctx.labels.prFixVerified],
+					ctx.writeToken,
+				);
 			}
 		} else {
-			previewRelease = await publishPreviewRelease(session);
+			previewRelease = await publishPreviewRelease(session, baseSha);
 			if (previewRelease) {
 				console.info('Preview release published:', previewRelease.urls);
 			} else {

@@ -9,7 +9,7 @@ Develop and verify a fix for a diagnosed bug.
 ## Prerequisites
 
 - **`triageDir`** — Directory containing the reproduction project.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 - **`report.md`** — File in `triageDir` from previous steps.
 
 ## Overview

@@ -9,7 +9,7 @@ Find the root cause of a reproduced bug in the project's source code.
 ## Prerequisites
 
 - **`triageDir`** — Directory containing the reproduction project.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 - **`report.md`** — File in `triageDir` from the reproduce step.
 
 ## Overview

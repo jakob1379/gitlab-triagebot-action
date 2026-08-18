@@ -1,6 +1,6 @@
 # Verify
 
-Verify whether a GitHub issue describes an actual bug or a misunderstanding of intended behavior.
+Verify whether a GitLab issue describes an actual bug or a misunderstanding of intended behavior.
 
 **CRITICAL: You MUST always append to `report.md` before finishing.**
 
@@ -9,7 +9,7 @@ Verify whether a GitHub issue describes an actual bug or a misunderstanding of i
 ## Prerequisites
 
 - **`triageDir`** — Directory with the reproduction.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`issueDetails`** — The GitLab API issue details payload.
 - **`report.md`** — From previous steps.
 
 ## Step 1: Identify the Claim

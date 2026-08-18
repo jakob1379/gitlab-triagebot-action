@@ -6,26 +6,32 @@ import { afterEach, describe, it } from 'node:test';
 import type { ActionContext } from '../../src/context.ts';
 import { handleTriage } from '../../src/handlers/triage.ts';
 import { labelConfigFromInputs } from '../../src/labels.ts';
+import { type GlabStub, ndjson, stubGlab } from '../helpers/glab-stub.ts';
 
-const originalFetch = globalThis.fetch;
 const originalCwd = process.cwd();
 let tempDir: string | null = null;
+let glab: GlabStub | null = null;
 
 afterEach(() => {
-	globalThis.fetch = originalFetch;
 	process.chdir(originalCwd);
+	glab?.restore();
+	glab = null;
 	if (tempDir) {
 		rmSync(tempDir, { recursive: true, force: true });
 		tempDir = null;
 	}
 });
 
-function jsonResponse(body: unknown): Response {
-	return new Response(JSON.stringify(body), {
-		status: 200,
-		headers: { 'content-type': 'application/json' },
-	});
-}
+const ISSUE = JSON.stringify({
+	title: 'Example issue',
+	description: 'Issue body',
+	author: { username: 'reporter' },
+	labels: ['triage: needs triage'],
+	created_at: '2026-01-01T00:00:00Z',
+	state: 'opened',
+	iid: 123,
+	web_url: 'https://gitlab.example.com/grp/proj/-/issues/123',
+});
 
 function createTriageSkill(): string {
 	tempDir = mkdtempSync(join(tmpdir(), 'triagebot-action-'));
@@ -43,54 +49,33 @@ function createTriageSkill(): string {
 	return skillDir;
 }
 
-function mockGitHubApi(): void {
-	globalThis.fetch = async (input, init) => {
-		const url = String(input);
-		if (url.endsWith('/issues/123')) {
-			return jsonResponse({
-				title: 'Example issue',
-				body: 'Issue body',
-				user: { login: 'reporter' },
-				labels: [{ name: 'triage: needs triage' }],
-				created_at: '2026-01-01T00:00:00Z',
-				state: 'open',
-				number: 123,
-				html_url: 'https://github.com/withastro/astro/issues/123',
-			});
-		}
-		if (url.endsWith('/issues/123/comments?per_page=100')) {
-			return jsonResponse([]);
-		}
-		if (url.endsWith('/issues/123/comments') && init?.method === 'POST') {
-			return jsonResponse({});
-		}
-		if (url.includes('/issues/123/labels/')) {
-			return new Response('', { status: 200 });
-		}
-		if (url.endsWith('/issues/123/labels') && init?.method === 'POST') {
-			return jsonResponse([]);
-		}
-		throw new Error(`Unexpected fetch: ${url}`);
-	};
-}
-
 describe('handleTriage integration', () => {
-	it('does not reject because triage-skill is provided as an action input directory path', async () => {
-		mockGitHubApi();
+	it('does not reject because triage-skill is provided as a job input directory path', async () => {
+		glab = stubGlab([
+			{ match: '^issue view 123\\b', stdout: ISSUE },
+			{ match: '/issues/123/notes', stdout: ndjson([]) },
+			// The failure path below writes a failure comment and swaps the label.
+			{ match: '^issue note 123\\b' },
+			{ match: '^issue update 123\\b' },
+		]);
+
 		const ctx: ActionContext = {
-			repo: 'withastro/astro',
+			repo: 'grp/proj',
 			readToken: 'read-token',
 			writeToken: 'write-token',
 			anthropicApiKey: 'anthropic-key',
+			cloudflareApiKey: null,
+			cloudflareAccountId: null,
 			triageSkill: createTriageSkill(),
 			prSkill: null,
-			prSkillName: 'astro-pr-writer',
+			prSkillName: 'pr-writer',
 			autoPrOnFix: false,
 			buildCommand: null,
+			// Deliberately invalid, to fail the run *after* skill registration.
 			triageModel: false as unknown as string,
 			verificationModel: false as unknown as string,
 			labels: labelConfigFromInputs(() => ''),
-			botLogins: ['github-actions[bot]', 'astrobot-houston'],
+			botLogins: ['project_1_bot_abc'],
 		};
 
 		let error: unknown;

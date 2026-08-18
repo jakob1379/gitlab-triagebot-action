@@ -1,14 +1,20 @@
 # triagebot-action
 
-AI-powered issue triage bot for GitHub repositories. Uses a label-driven state machine to automatically reproduce bugs, diagnose root causes, attempt fixes, and verify them with reporters.
+AI-powered issue triage bot for GitLab projects. Uses a label-driven state machine to automatically reproduce bugs, diagnose root causes, attempt fixes, and verify them with reporters.
+
+Runs as a GitLab CI job via [`.gitlab-ci.yml`](.gitlab-ci.yml).
+
+> **Using GitHub?** This is a GitLab-only fork. Use upstream
+> [withastro/triagebot-action](https://github.com/withastro/triagebot-action) — it is the
+> GitHub Action this was forked from, and it is where GitHub support is maintained.
 
 ## How it works
 
-When an issue is opened, the bot adds a triage label and runs an AI agent through a multi-stage pipeline: **reproduce** the bug, **diagnose** the root cause, **verify** it's actually a bug, and **attempt a fix**. If a fix is found, it pushes a branch, publishes a preview release, and asks the reporter to confirm. When they do, it creates a PR.
+When an issue is opened, the bot adds a triage label and runs an AI agent through a multi-stage pipeline: **reproduce** the bug, **diagnose** the root cause, **verify** it's actually a bug, and **attempt a fix**. If a fix is found, it pushes a branch, publishes a preview release, and asks the reporter to confirm. When they do, it opens a merge request.
 
-Repositories that can't publish preview releases (or that prefer to skip the confirmation step) can set `auto-pr-on-fix: true` to open the PR immediately once a fix is pushed, moving the issue straight to `fix verified`.
+Repositories that can't publish preview releases (or that prefer to skip the confirmation step) can set `auto-pr-on-fix: true` to open the merge request immediately once a fix is pushed, moving the issue straight to `fix verified`.
 
-The entire flow is driven by a finite state machine encoded as GitHub labels. Each issue has exactly one triage label at any time, and transitions happen automatically based on events and AI classification.
+The entire flow is driven by a finite state machine encoded as issue labels. Each issue has exactly one triage label at any time, and transitions happen automatically based on events and AI classification.
 
 ### State Machine
 
@@ -60,9 +66,9 @@ stateDiagram-v2
 | `triage: failed` | Triage failed unexpectedly; can be retried up to 3 failed attempts |
 | `triage: fix pending` | Fix pushed to branch, waiting for reporter confirmation |
 | `triage: fix rejected` | Reporter says the proposed fix does not work |
-| `triage: fix verified` | Reporter confirmed the fix works, PR created |
+| `triage: fix verified` | Reporter confirmed the fix works, merge request created |
 
-All label names are customizable via action inputs.
+All label names are customizable via job inputs.
 
 **Re-triageable labels** — when a new comment arrives on an issue with one of these labels, the bot evaluates whether the comment contains new actionable information and potentially re-runs triage:
 
@@ -81,54 +87,40 @@ All label names are customizable via action inputs.
 
 ## Setup
 
-### 1. Create a workflow
+The job builds and runs the bot from its own checkout, so **use a fork or vendored copy of
+this repo** — a remote `include:` from your project would resolve `dist/index.mjs` against
+your checkout and fail.
 
-Add a single workflow file to your repository:
+### 1. Wire the webhook
 
-```yaml
-# .github/workflows/triage.yml
-name: Issue Triage
+GitLab has no issue-event pipeline source, but it does not need an external webhook
+receiver either: a project webhook can POST straight at the pipeline trigger endpoint, as
+long as the ref is in the URL.
 
-on:
-  issues:
-    types: [opened, reopened, closed]
-  issue_comment:
-    types: [created]
+Under **Settings → Webhooks**, add a hook with the **Issues events** and **Comments
+events** triggers and this URL:
 
-permissions: {}
-
-concurrency:
-  group: triage-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
-jobs:
-  triage:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      issues: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: withastro/triagebot-action@v1
-        with:
-          read-token: ${{ secrets.GITHUB_TOKEN }}
-          write-token: ${{ secrets.BOT_GITHUB_TOKEN }}
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          triage-skill: .agents/skills/triage
-          bot-logins: my-bot-username
+```text
+https://gitlab.example.com/api/v4/projects/<id>/ref/main/trigger/pipeline?token=<trigger_token>
 ```
+
+The ref in the URL takes precedence over the payload, and GitLab exposes the full webhook
+body to the job as `$TRIGGER_PAYLOAD` — a *file path*, which is what the bot reads the
+event from.
+
+`CI_PIPELINE_SOURCE` is `trigger`, not anything issue-specific, so `rules:` cannot gate on
+the event type (the payload is a file, which `rules:` cannot read). Gating happens in-job:
+the router skips merge request comments, and the bot resolves its own token username so it
+ignores the comments it posts itself.
+
+Requires GitLab 16.11+, for `object_attributes.action` on note hooks.
 
 ### 2. Create triage skills
 
-The action needs project-specific skill files that tell the AI agent how to work with your codebase. Create these in the directory specified by `triage-skill`:
+The bot needs project-specific skill files that tell the AI agent how to work with your
+codebase. Create these in the directory specified by `triage-skill`:
 
-```
+```text
 .agents/skills/triage/
   SKILL.md          # Orchestration: defines the step order and early exits
   reproduce.md      # How to reproduce bugs in your project
@@ -137,51 +129,72 @@ The action needs project-specific skill files that tell the AI agent how to work
   fix.md            # How to write and verify fixes
 ```
 
-Each file is a markdown document with instructions for the AI agent. The [`examples/skills/triage/`](examples/skills/triage/) directory contains starter templates you can copy and customize. Look for `<!-- CUSTOMIZE -->` comments indicating project-specific sections.
+Each file is a Markdown document with instructions for the AI agent. The
+[`examples/skills/triage/`](examples/skills/triage/) directory contains starter templates
+you can copy and customize. Look for `<!-- CUSTOMIZE -->` comments indicating
+project-specific sections.
 
-For a production example, see the [Astro monorepo skills](https://github.com/withastro/astro/tree/main/.agents/skills/triage).
+### 3. Set the CI/CD variables
 
-### 3. Set up tokens
+Inputs are read from the environment as `INPUT_*`, so masked CI/CD variables are all that
+is needed — there is no `with:` block to fill in. GitLab variable keys allow only letters,
+digits and underscores, so a hyphenated input name maps to its underscored form:
+`triage-model` becomes `INPUT_TRIAGE_MODEL`.
 
-The action uses two GitHub tokens:
+| Variable | Notes |
+|----------|-------|
+| `INPUT_READ_TOKEN` | Project access token, `read_api` + `read_repository` (the fix-branch lookup uses git) |
+| `INPUT_WRITE_TOKEN` | Project access token, `api` + `write_repository`. **`CI_JOB_TOKEN` cannot write issues**, so it will not do |
+| `INPUT_ANTHROPIC_API_KEY` | Or `INPUT_CLOUDFLARE_API_KEY` + `INPUT_CLOUDFLARE_ACCOUNT_ID` |
+| `INPUT_BOT_LOGINS` | Optional. Other bots whose comments should not trigger triage, comma-separated |
 
-- **`read-token`** — For reading issues, labels, and PRs. The default `GITHUB_TOKEN` works.
-- **`write-token`** — For posting comments, pushing fix branches, creating PRs, and managing labels. This should be a GitHub App token or PAT with write access to issues and contents.
+The required `triage-skill` input is already set in the job file as
+`INPUT_TRIAGE_SKILL: .agents/skills/triage` — change it there if your skills live
+elsewhere.
 
-You also need credentials for the AI agent. Choose one of:
+You need credentials for the AI agent. Choose one of:
 
-- **`anthropic-api-key`** — to use Anthropic models (the default `triage-model` / `verification-model`).
-- **`cloudflare-api-key`** + **`cloudflare-account-id`** — to use Cloudflare Workers AI models (e.g. Kimi). Requires setting `triage-model` / `verification-model` to a `cloudflare-workers-ai/*` model.
+- **`anthropic-api-key`** — to use Anthropic models (the default `triage-model` /
+  `verification-model`).
+- **`cloudflare-api-key`** + **`cloudflare-account-id`** — to use Cloudflare Workers AI
+  models (e.g. Kimi). Requires setting `triage-model` / `verification-model` to a
+  `cloudflare-workers-ai/*` model.
 
-Workers AI is called over its OpenAI-compatible REST endpoint, so the action still runs on the standard GitHub Actions runner — no Worker deployment is required.
+Workers AI is called over its OpenAI-compatible REST endpoint, so the job still runs on a
+standard GitLab runner — no Worker deployment is required.
 
-#### Using Cloudflare Workers AI (Kimi)
-
-```yaml
-      - uses: withastro/triagebot-action@v1
-        with:
-          read-token: ${{ secrets.GITHUB_TOKEN }}
-          write-token: ${{ secrets.BOT_GITHUB_TOKEN }}
-          cloudflare-api-key: ${{ secrets.CLOUDFLARE_API_KEY }}
-          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          triage-model: cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code
-          verification-model: cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
-          triage-skill: .agents/skills/triage
+```text
+INPUT_CLOUDFLARE_API_KEY     = …
+INPUT_CLOUDFLARE_ACCOUNT_ID  = …
+INPUT_TRIAGE_MODEL           = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code
+INPUT_VERIFICATION_MODEL     = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
 ```
+
+### Things GitLab does differently
+
+- **Concurrency is project-wide** (`resource_group`), not per issue. The issue number
+  lives inside the payload file, which `resource_group` cannot read.
+- **Bot identity is resolved at runtime** via `glab api user`, because a project access
+  token posts as `project_<id>_bot_<hash>` — a name nothing can hardcode. The job fails
+  if that lookup fails: without its own name the bot cannot tell its comments from a
+  reporter's, and would read its own triage report as the reporter confirming the fix.
+- **Notes carry no author association.** `issueDetails` reports every commenter as
+  `NONE`, so skill logic keyed on `MEMBER` / `COLLABORATOR` / `OWNER` never fires.
+
 
 ## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `read-token` | Yes | | GitHub token for reading issues/labels/PRs |
-| `write-token` | Yes | | GitHub token for posting comments, pushing branches, creating PRs |
+| `read-token` | Yes | | Project access token for reading issues, labels and MRs |
+| `write-token` | Yes | | Project access token for posting notes, pushing branches, creating MRs |
 | `anthropic-api-key` | No¹ | | Anthropic API key for LLM calls |
 | `cloudflare-api-key` | No¹ | | Cloudflare API token with Workers AI access. Enables `cloudflare-workers-ai/*` models. Requires `cloudflare-account-id` |
 | `cloudflare-account-id` | No¹ | | Cloudflare account ID for the Workers AI REST endpoint. Required when `cloudflare-api-key` is set |
 | `triage-skill` | Yes | | Path to triage skill directory (`SKILL.md`, `reproduce.md`, etc.) |
-| `pr-skill` | No | | Path to PR writer skill directory. If not provided, uses a built-in prompt. |
-| `auto-pr-on-fix` | No | `false` | When `true`, open a PR immediately after triage finds and pushes a fix, skipping the preview/confirmation flow. |
-| `bot-logins` | No | | Comma-separated list of bot usernames whose comments should be ignored. `github-actions[bot]` is always included. |
+| `pr-skill` | No | | Path to merge request writer skill directory. If not provided, uses a built-in prompt. |
+| `auto-pr-on-fix` | No | `false` | When `true`, open a merge request immediately after triage finds and pushes a fix, skipping the preview/confirmation flow. |
+| `bot-logins` | No | | Comma-separated list of *other* bot usernames whose comments should be ignored. The bot's own username is resolved at runtime and always added; it does not need to be listed here. |
 | `build-command` | No | | Command to build the project before triage |
 | `triage-model` | No | `anthropic/claude-opus-4-6` | Model for the triage pipeline (`provider/model-id`, e.g. `cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code`) |
 | `verification-model` | No | `anthropic/claude-sonnet-4-6` | Model for fix verification and retriage checks |
@@ -208,29 +221,65 @@ All labels are customizable. These are the defaults:
 
 ## Architecture
 
-The action has two layers:
+The bot has two layers:
 
-**Action-owned** — the state machine, GitHub API interactions, and LLM calls that drive the workflow:
+**Bot-owned** — the state machine, GitLab API interactions, and LLM calls that drive the workflow:
 - FSM routing based on event type and current label
 - Re-triage evaluation (is there new actionable information?)
 - Fix verification (did the reporter confirm the fix?)
 - Comment generation from triage findings
-- PR creation from verified fix branches (using project's PR skill or built-in prompt)
+- Merge request creation from verified fix branches (using project's MR skill or built-in prompt)
 - Branch cleanup on issue close
 
 **Project-owned** — the skill files that teach the AI agent about your specific codebase:
 - **Triage skills** (required) — how to reproduce, diagnose, verify, and fix bugs
-- **PR writer skill** (optional) — how to format PR titles and bodies for your project
+- **MR writer skill** (optional) — how to format merge request titles and bodies for your project
 
-The action invokes project skills via [Flue](https://github.com/anthropics/flue), an agent orchestration framework. The AI agent runs shell commands on the GitHub Actions runner to build, test, and debug the project.
+The bot invokes project skills via [Flue](https://github.com/anthropics/flue), an agent orchestration framework. The AI agent runs shell commands on the CI runner to build, test, and debug the project.
+
+**Forge layer:**
+
+- `src/gitlab.ts` — every GitLab call, via `glab` subcommands
+- `src/git.ts` — plain git (commit, push), kept out of the agent's sandbox so the write token never reaches the LLM
+- `src/gitlab-event.ts` — GitLab webhook payload → the event the router expects
 
 ## Development
 
 ```bash
 pnpm install
-pnpm test          # Unit tests (router, labels)
+pnpm test          # Unit + integration tests (router, labels, glab argv, event adapter)
 pnpm test:evals    # LLM eval tests (requires ANTHROPIC_API_KEY)
 pnpm build         # Bundle to dist/
 pnpm lint          # Biome check
 pnpm format        # Biome format
+```
+
+### Running the pipelines locally
+
+[`flake.nix`](flake.nix) provides `gitlab-ci-local`, `glab`, node and pnpm:
+
+```bash
+nix develop
+```
+
+An event payload that routes to `skip` exercises install → build → event parsing →
+routing without any LLM calls. It is not offline: the entrypoint resolves the bot's
+own username through `glab api user` before it parses anything, and refuses to run
+if that fails, so a working write token is still required.
+
+```bash
+# TRIGGER_PAYLOAD is a path to a GitLab webhook body. gitlab-ci-local only
+# copies git-known files into the job, so the payload must be tracked or staged.
+gitlab-ci-local triage \
+  --variable CI_PIPELINE_SOURCE=trigger \
+  --variable CI_PROJECT_PATH=group/project \
+  --variable TRIGGER_PAYLOAD='$CI_PROJECT_DIR/trigger-payload.json' \
+  --variable INPUT_READ_TOKEN=… --variable INPUT_WRITE_TOKEN=… \
+  --variable INPUT_ANTHROPIC_API_KEY=…
+```
+
+The lint and test job runs the same way:
+
+```bash
+gitlab-ci-local test --variable CI_PIPELINE_SOURCE=merge_request_event
 ```

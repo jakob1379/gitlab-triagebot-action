@@ -1,6 +1,6 @@
 /**
  * Comment generation. Reads the triage report.md produced by the skill
- * pipeline and generates a formatted GitHub issue comment.
+ * pipeline and generates a formatted GitLab issue comment.
  *
  * This is action-owned logic — it controls the bot's output format,
  * not project-specific triage behavior.
@@ -8,7 +8,7 @@
 
 import type { FlueSession } from '@flue/runtime';
 import * as v from 'valibot';
-import type { IssueDetails, RepoLabel } from '../github.ts';
+import { compareUrl, type IssueDetails, type RepoLabel } from '../gitlab.ts';
 
 interface CommentArgs {
 	branchName: string | null;
@@ -18,16 +18,16 @@ interface CommentArgs {
 	previewRelease?: { urls: string[] } | null;
 }
 
-const COMMENT_INSTRUCTIONS = `Generate a GitHub issue comment from triage findings.
+const COMMENT_INSTRUCTIONS = `Generate a GitLab issue comment from triage findings.
 
-**CRITICAL: You MUST always read report.md and produce a GitHub comment as your final output, regardless of what input files are available. Even if report.md is missing or empty, you must still produce a comment. In that case, produce a minimal comment stating that automated triage could not be completed.**
+**CRITICAL: You MUST always read report.md and produce a GitLab comment as your final output, regardless of what input files are available. Even if report.md is missing or empty, you must still produce a comment. In that case, produce a minimal comment stating that automated triage could not be completed.**
 
 **SCOPE: Your job is comment generation only. Do NOT attempt reproduction, diagnosis, or fixing.**
 
 ## Overview
 
 1. Read report.md from the triage directory
-2. Generate a GitHub comment following the template below
+2. Generate a GitLab comment following the template below
 
 ## "Fix" Instructions
 
@@ -55,7 +55,7 @@ The comment must start with an at-a-glance summary, followed by short explanatio
 
 \`\`\`markdown
 - **Reproduced:** [Yes / No / Skipped — reason]
-- **Exploration:** [Yes / No / Partial / Already fixed on main] [If branchName is non-null: — [View branch](https://github.com/{repo}/compare/{branchName}?expand=1)]
+- **Exploration:** [Yes / No / Partial / Already fixed on main] [If branchName is non-null: — [View branch]({compareUrl})]
 - **Unit Test:** [Yes — path/to/test.test.ts / No — reason]
 - **Priority:** [See Priority Instructions above]
 
@@ -94,6 +94,7 @@ export async function generateComment(session: FlueSession, args: CommentArgs): 
 
 - **Issue:** #${args.issueDetails.number} — ${args.issueDetails.title}
 - **Branch:** ${args.branchName ?? '(none)'}
+- **compareUrl:** ${args.branchName ? compareUrl(args.repo, args.branchName) : '(none)'}
 - **Repo:** ${args.repo}
 - **Preview Release:** ${args.previewRelease ? args.previewRelease.urls.join(', ') : '(none)'}
 
@@ -105,7 +106,7 @@ Now read report.md from the triage directory and generate the comment.`,
 			result: v.pipe(
 				v.string(),
 				v.description(
-					'Return only the GitHub comment body generated from the template. This returned comment must start with the bullet-point summary (- **Reproduced:** ...)',
+					'Return only the GitLab comment body generated from the template. This returned comment must start with the bullet-point summary (- **Reproduced:** ...)',
 				),
 			),
 		},

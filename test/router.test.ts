@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LabelConfig } from '../src/labels.ts';
-import type { GitHubEvent } from '../src/router.ts';
+import type { TriageEvent } from '../src/router.ts';
 import { route } from '../src/router.ts';
 
 const labels: LabelConfig = {
@@ -18,13 +18,13 @@ const labels: LabelConfig = {
 	prFixVerified: 'fix verified',
 };
 
-function event(overrides: Partial<GitHubEvent>): GitHubEvent {
+function event(overrides: Partial<TriageEvent>): TriageEvent {
 	return {
 		action: 'opened',
 		isPullRequest: false,
 		issueNumber: 42,
 		issueLabels: [],
-		botLogins: ['github-actions[bot]', 'astrobot-houston'],
+		botLogins: ['project_1_bot_abc', 'astrobot-houston'],
 		...overrides,
 	};
 }
@@ -119,7 +119,7 @@ describe('router', () => {
 			event({
 				action: 'created',
 				issueLabels: ['triage: fix pending'],
-				commentAuthor: 'github-actions[bot]',
+				commentAuthor: 'project_1_bot_abc',
 			}),
 			labels,
 		);

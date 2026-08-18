@@ -5,7 +5,7 @@ import { local } from '@flue/runtime/node';
 import { createSession } from '../../src/flue.ts';
 
 describe('Flue session initialization', () => {
-	it('creates a usable session for a standalone GitHub Action process', async () => {
+	it('creates a usable session for a standalone CI process', async () => {
 		const agent = createAgent(() => ({
 			sandbox: local({ env: {} }),
 			model: false,

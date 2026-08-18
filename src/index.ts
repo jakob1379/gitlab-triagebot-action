@@ -1,30 +1,35 @@
 /**
- * Entry point for the triagebot GitHub Action.
+ * Entry point for the triagebot GitLab CI job.
  *
- * Reads the GitHub event payload and action inputs, routes to the
- * appropriate handler via the FSM router.
+ * Reads the webhook body GitLab dropped at $TRIGGER_PAYLOAD along with the
+ * INPUT_* job variables, then routes to the appropriate handler via the FSM
+ * router.
  */
 
 import { readFileSync } from 'node:fs';
 import type { ActionContext } from './context.ts';
+import { currentUser } from './gitlab.ts';
+import { parseGitLabEvent } from './gitlab-event.ts';
 import { handleCleanup } from './handlers/cleanup.ts';
 import { handleRetriage } from './handlers/retriage.ts';
 import { handleTriage } from './handlers/triage.ts';
 import { handleVerifyFix } from './handlers/verify-fix.ts';
 import { getInput } from './input.ts';
 import { labelConfigFromInputs } from './labels.ts';
-import { type GitHubEvent, route } from './router.ts';
+import { route } from './router.ts';
 
-// ---------- GitHub Actions helpers ----------
+// ---------- Input helpers ----------
 
 function parseBotLogins(input: string): string[] {
-	const defaults = ['github-actions[bot]'];
-	if (!input) return defaults;
-	const extra = input
-		.split(',')
-		.map((s) => s.trim())
-		.filter(Boolean);
-	return [...new Set([...defaults, ...extra])];
+	if (!input) return [];
+	return [
+		...new Set(
+			input
+				.split(',')
+				.map((s) => s.trim())
+				.filter(Boolean),
+		),
+	];
 }
 
 function getRequiredInput(name: string): string {
@@ -38,16 +43,20 @@ function getRequiredInput(name: string): string {
 // ---------- Main ----------
 
 async function main(): Promise<void> {
-	// Read the GitHub event payload.
-	const eventPath = process.env.GITHUB_EVENT_PATH;
+	// GitLab hands a webhook-triggered pipeline the request body as a file and
+	// puts its path here.
+	const eventPath = process.env.TRIGGER_PAYLOAD;
 	if (!eventPath) {
-		throw new Error('GITHUB_EVENT_PATH is not set');
+		throw new Error(
+			'TRIGGER_PAYLOAD is not set. This job expects a pipeline triggered by a project webhook; see .gitlab-ci.yml.',
+		);
 	}
 	const payload = JSON.parse(readFileSync(eventPath, 'utf-8'));
 
-	const repo = process.env.GITHUB_REPOSITORY;
+	// Same "namespace/project" shape the glab --repo flag wants.
+	const repo = process.env.CI_PROJECT_PATH;
 	if (!repo) {
-		throw new Error('GITHUB_REPOSITORY is not set');
+		throw new Error('CI_PROJECT_PATH is not set');
 	}
 
 	// Build the action context from inputs.
@@ -97,21 +106,31 @@ async function main(): Promise<void> {
 		process.env.CLOUDFLARE_ACCOUNT_ID = ctx.cloudflareAccountId;
 	}
 
-	// Parse the event into the shape the router expects.
-	const issue = payload.issue;
-	if (!issue) {
+	// A project access token posts as `project_<id>_bot_<hash>`, which nothing
+	// can hardcode, so the bot has to ask who it is.
+	//
+	// writeToken, not readToken: comments are posted with the write token, so
+	// that is the username the webhook will report as their author.
+	//
+	// Fail closed. Without this name the bot cannot tell its own comments from a
+	// reporter's, and verify-fix picks "the latest comment not from a bot" as the
+	// reporter's verdict — which would be the bot's own triage report, text that
+	// describes a working fix. It classifies as confirmed, and a merge request
+	// gets opened with nobody having confirmed anything. A token that cannot read
+	// its own user will fail on the first write anyway.
+	const self = await currentUser(ctx.writeToken);
+	if (!self) {
+		throw new Error(
+			'Could not resolve the bot username from the write token. Refusing to run: without it the bot cannot recognise its own comments, and would treat its own triage report as the reporter confirming the fix.',
+		);
+	}
+	ctx.botLogins = [...new Set([...ctx.botLogins, self])];
+
+	const event = parseGitLabEvent(payload, ctx.botLogins);
+	if (!event) {
 		console.info('No issue in event payload, nothing to do.');
 		return;
 	}
-
-	const event: GitHubEvent = {
-		action: payload.action,
-		isPullRequest: !!issue.pull_request,
-		issueNumber: issue.number,
-		issueLabels: (issue.labels ?? []).map((l: { name: string }) => l.name),
-		commentAuthor: payload.comment?.user?.login,
-		botLogins: ctx.botLogins,
-	};
 
 	const action = route(event, labels);
 	console.info(`Router decision: ${action.type}`, action);

@@ -28,7 +28,7 @@ async function classifyComment(
 	const session = await createSession(agent);
 
 	const { data } = await session.prompt(
-		`You are reviewing a GitHub issue comment to determine if the commenter is confirming that a proposed fix works.
+		`You are reviewing a GitLab issue comment to determine if the commenter is confirming that a proposed fix works.
 
 ## Context
 An automated triage bot found a fix for an issue and published a preview release.

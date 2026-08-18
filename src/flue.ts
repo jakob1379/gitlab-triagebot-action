@@ -24,9 +24,9 @@ async function createDefaultEnv() {
 
 export async function createSession(agent: CreatedAgent): Promise<FlueSession> {
 	const ctx = createFlueContext({
-		id: `triagebot-action-${process.env.GITHUB_RUN_ID ?? Date.now()}-${
-			process.env.GITHUB_RUN_ATTEMPT ?? '0'
-		}`,
+		// CI_JOB_ID is unique per run including retries, so it needs no attempt
+		// counter. Date.now() only covers running outside CI, e.g. in tests.
+		id: `triagebot-${process.env.CI_PIPELINE_ID ?? 'local'}-${process.env.CI_JOB_ID ?? Date.now()}`,
 		payload: {},
 		env: process.env,
 		agentConfig: {

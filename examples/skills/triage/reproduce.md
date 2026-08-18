@@ -1,6 +1,6 @@
 # Reproduce
 
-Reproduce a GitHub issue to determine if a bug is valid and reproducible.
+Reproduce a GitLab issue to determine if a bug is valid and reproducible.
 
 **CRITICAL: You MUST always read `report.md` and write `report.md` to the triage directory before finishing, regardless of outcome. Even if you encounter errors, cannot reproduce the bug, hit unexpected problems, or need to skip — always write `report.md`. The orchestrator and downstream skills depend on this file to determine what happened. If you finish without writing it, the entire pipeline fails silently.**
 
@@ -8,8 +8,8 @@ Reproduce a GitHub issue to determine if a bug is valid and reproducible.
 
 ## Prerequisites
 
-- **`triageDir`** — Directory containing the reproduction project (e.g. `triage/issue-123`). If not passed as an arg, default to `triage/gh-<issue_number>`.
-- **`issueDetails`** — The GitHub API issue details payload.
+- **`triageDir`** — Directory containing the reproduction project (e.g. `triage/issue-123`). If not passed as an arg, default to `triage/issue-<issue_number>`.
+- **`issueDetails`** — The GitLab API issue details payload.
 
 ## Overview
 
@@ -62,16 +62,20 @@ Skip if the bug is specific to a runtime not available in CI. Our sandbox only s
 
 ### Maintainer Override (`maintainer-override`)
 
-Skip if a maintainer (check `authorAssociation` for `MEMBER`, `COLLABORATOR`, or `OWNER`) has commented that this issue should not be auto-triaged.
+Skip if a maintainer has commented that this issue should not be auto-triaged.
+
+<!-- NOTE: GitLab notes carry no author association, so `issueDetails` reports
+     every commenter as `NONE`. Identify maintainers another way — by username,
+     or with `glab api projects/:id/members/all`. -->
 
 ## Step 3: Set Up Reproduction Project
 
 Set up the reproduction in the `triageDir` directory.
 
-### From a GitHub URL
+### From a git URL
 
 ```bash
-git clone https://github.com/<owner>/<repo>.git <triageDir>
+git clone <repo-url> <triageDir>
 rm -rf <triageDir>/.git
 ```
 
