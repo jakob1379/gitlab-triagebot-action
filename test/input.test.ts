@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { getInput } from '../src/input.ts';
 
+// Restore rather than delete: a developer with INPUT_READ_TOKEN already exported
+// should not have it removed from under the rest of the run.
+const original = process.env.INPUT_READ_TOKEN;
 afterEach(() => {
-	delete process.env.INPUT_READ_TOKEN;
+	if (original === undefined) delete process.env.INPUT_READ_TOKEN;
+	else process.env.INPUT_READ_TOKEN = original;
 });
 
 describe('getInput', () => {
@@ -16,6 +20,8 @@ describe('getInput', () => {
 	});
 
 	it('returns an empty string for an unset input', () => {
+		delete process.env.INPUT_READ_TOKEN;
+
 		assert.equal(getInput('read-token'), '');
 	});
 });

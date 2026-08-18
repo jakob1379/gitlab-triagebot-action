@@ -262,7 +262,10 @@ pnpm format        # Biome format
 nix develop
 ```
 
-An event payload that routes to `skip` exercises install → build → event parsing → routing without any LLM or API calls:
+An event payload that routes to `skip` exercises install → build → event parsing →
+routing without any LLM calls. It is not offline: the entrypoint resolves the bot's
+own username through `glab api user` before it parses anything, and refuses to run
+if that fails, so a working write token is still required.
 
 ```bash
 # TRIGGER_PAYLOAD is a path to a GitLab webhook body. gitlab-ci-local only

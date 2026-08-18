@@ -429,7 +429,10 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	// Create the fix branch so the agent's changes don't land on main.
 	// This is needed for both initial triage and retriage.
-	await session.shell(`git checkout -B ${JSON.stringify(branch)}`);
+	const checkout = await session.shell(`git checkout -B ${JSON.stringify(branch)}`);
+	if (checkout.exitCode !== 0) {
+		throw new Error(`Could not create fix branch ${branch}: ${checkout.stderr.trim()}`);
+	}
 
 	// Run the pipeline.
 	const triageResult = await runTriagePipeline(session, issueNumber, issueDetails);
@@ -438,10 +441,19 @@ async function runTriage(issueNumber: number, ctx: ActionContext): Promise<void>
 
 	// Push fix branch if there are changes.
 	{
+		// Checked, not just read: on a failure stdout is empty, which is
+		// indistinguishable from "the agent changed nothing" and would report a run
+		// that did find a fix as "no fix found".
 		const diff = await session.shell(`git diff ${baseSha} --stat`);
+		if (diff.exitCode !== 0) {
+			throw new Error(`Could not diff against ${baseSha}: ${diff.stderr.trim()}`);
+		}
 		console.info(`Triage diff stat present: ${Boolean(diff.stdout.trim())}`);
 		if (diff.stdout.trim()) {
 			const status = await session.shell('git status --porcelain');
+			if (status.exitCode !== 0) {
+				throw new Error(`Could not read the worktree status: ${status.stderr.trim()}`);
+			}
 			console.info(`Triage worktree status present: ${Boolean(status.stdout.trim())}`);
 			if (status.stdout.trim()) {
 				const defaultMessage = triageResult.fixed

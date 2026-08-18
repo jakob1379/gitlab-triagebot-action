@@ -46,6 +46,7 @@ const argv = args.join(' ');
 
 const routes = JSON.parse(fs.readFileSync(path.join(__dirname, 'routes.json'), 'utf8'));
 
+let matched = false;
 for (let i = 0; i < routes.length; i++) {
   const route = routes[i];
   if (!new RegExp(route.match).test(argv)) continue;
@@ -60,14 +61,19 @@ for (let i = 0; i < routes.length; i++) {
   } catch {}
   fs.appendFileSync(countFile, 'x');
   const replies = route.stdout ?? [''];
+  // No process.exit here: it can truncate a pending write to a pipe, and some
+  // routes reply with multi-kilobyte JSON. Falling off the end flushes stdout.
   process.stdout.write(replies[Math.min(seen, replies.length - 1)]);
-  process.exit(0);
+  matched = true;
+  break;
 }
 
-// Unmatched calls fail loudly: a silent empty reply would surface much later as
-// a confusing parse error.
-process.stderr.write('glab stub: no route for: ' + argv + '\\n');
-process.exit(1);
+if (!matched) {
+  // Unmatched calls fail loudly: a silent empty reply would surface much later
+  // as a confusing parse error.
+  process.stderr.write('glab stub: no route for: ' + argv + '\\n');
+  process.exit(1);
+}
 `;
 
 export function stubGlab(routes: GlabRoute[]): GlabStub {

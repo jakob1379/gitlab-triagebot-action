@@ -56,8 +56,16 @@ triage:
     COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
     GLAB_VERSION: '1.112.0'
   before_script:
-    # The bot and the triage agent both shell out to glab.
-    - curl -sSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_amd64.tar.gz"
+    # The bot and the triage agent both shell out to glab. node:24 is multi-arch,
+    # so pick the archive for whatever the runner actually is rather than
+    # downloading an amd64 binary that only fails when it is first executed.
+    - |
+      case "$(uname -m)" in
+        x86_64) GLAB_ARCH=amd64 ;;
+        aarch64 | arm64) GLAB_ARCH=arm64 ;;
+        *) echo "no glab build for $(uname -m)" >&2; exit 1 ;;
+      esac
+    - curl -sSL "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/packages/generic/glab/${GLAB_VERSION}/glab_${GLAB_VERSION}_linux_${GLAB_ARCH}.tar.gz"
       | tar -xz -C /usr/local bin/glab
     - git config user.name "triagebot"
     - git config user.email "triagebot@users.noreply.gitlab.com"

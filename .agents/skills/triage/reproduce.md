@@ -56,7 +56,7 @@ To reproduce, work in the `triageDir` directory:
 For routing/label bugs, write a small script in the triage directory that imports the relevant module and exercises the reported scenario:
 
 ```typescript
-// triage/gh-123/test-repro.ts
+// triage/issue-123/test-repro.ts
 import { route } from '../../src/router.ts';
 import type { LabelConfig } from '../../src/labels.ts';
 
@@ -75,7 +75,7 @@ For LLM prompt issues, these are harder to reproduce deterministically. Document
 Run the reproduction:
 
 ```bash
-node triage/gh-<N>/test-repro.ts
+node triage/issue-<N>/test-repro.ts
 ```
 
 Or run the existing tests to see if they catch the issue:
