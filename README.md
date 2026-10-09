@@ -10,20 +10,52 @@ The issue's `triage::…` label says where it stands, and the bot keeps exactly 
 
 ```mermaid
 stateDiagram-v2
-    direction LR
-    state "needs reproduction · unable to reproduce<br/>unable to fix · failed" as waiting
-    [*] --> needs_triage: opened, reopened<br/>or labelled
-    needs_triage --> not_actionable: question, or ruled out
-    needs_triage --> fix_pending: bug fixed
-    needs_triage --> waiting: stuck, or error
-    waiting --> needs_triage: comment
-    needs_triage --> needs_approval: feature, plan posted
-    needs_approval --> needs_triage: comment
+    [*] --> needs_triage: Issue opened, reopened or labelled
+
+    needs_triage --> not_actionable: Question, or ruled out by the docs
+    needs_triage --> needs_reproduction: Missing details
+    needs_triage --> unable_to_reproduce: Can't reproduce
+    needs_triage --> unable_to_fix: Reproduced, no fix or fix refused
+    needs_triage --> fix_pending: Fixed, merge request opened
+    needs_triage --> needs_approval: Feature, plan posted
+    needs_triage --> failed: Run failed
+
     needs_approval --> approved: Maintainer approves
-    approved --> fix_pending: implemented
-    approved --> waiting: didn't work, or error
-    fix_pending --> [*]: merged
+    needs_approval --> needs_triage: New comment revises the plan
+    approved --> fix_pending: Plan implemented
+    approved --> unable_to_fix: Plan didn't work
+    approved --> failed: Run failed
+
+    needs_reproduction --> needs_triage: New comment
+    unable_to_reproduce --> needs_triage: New comment
+    unable_to_fix --> needs_triage: New comment
+    failed --> needs_triage: New comment, until 3 failures in a row
+
+    fix_pending --> [*]: Merge request merged
+
+    state needs_triage {
+        direction LR
+        [*] --> reproduce
+        reproduce --> diagnose
+        diagnose --> verify
+        verify --> fix: bug
+        verify --> plan: feature
+    }
 ```
+
+| Label | Meaning |
+|-------|---------|
+| `triage::needs-triage` | A run is queued or in progress |
+| `triage::not-actionable` | A question, or ruled out by a documented decision. Final |
+| `triage::needs-reproduction` | The report lacks what the agent needs to locate the problem |
+| `triage::unable-to-reproduce` | The code doesn't behave as reported |
+| `triage::unable-to-fix` | Diagnosed, but no fix it could defend, or the fix was refused |
+| `triage::needs-approval` | A feature; the plan is posted and waits for a Maintainer |
+| `triage::approved` | A Maintainer approved the plan; the run implementing it is queued |
+| `triage::fix-pending` | Merge request open on `triage/issue-<iid>`. Final until merged |
+| `triage::failed` | The run failed; the issue says why |
+
+Comments retry the issue on every label except `not-actionable`, `approved` and `fix-pending`.
 
 A run starts when:
 
