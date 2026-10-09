@@ -39,7 +39,7 @@ export async function createSession(agent: CreatedAgent): Promise<FlueSession> {
 		createDefaultEnv,
 		defaultStore,
 	});
-	const logger = createFlueEventLogger();
+	const logger = createFlueEventLogger(console.error);
 	ctx.setEventCallback((event) => logger.present(event));
 	const harness = await ctx.init(agent);
 	return harness.session();
