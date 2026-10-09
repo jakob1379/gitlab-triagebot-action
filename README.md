@@ -1,285 +1,175 @@
-# triagebot-action
+# gitlab-triagebot-action
 
-AI-powered issue triage bot for GitLab projects. Uses a label-driven state machine to automatically reproduce bugs, diagnose root causes, attempt fixes, and verify them with reporters.
+AI issue triage for GitLab projects, run as a CI job. When a Reporter or above opens an issue, an agent reads the repository, reproduces what it can, decides whether the report is a bug, a feature or neither, and answers on the issue. It fixes what it can in a merge request that closes the issue. For a feature it posts a plan, and builds it only after a Maintainer approves.
 
-Runs as a GitLab CI job via [`.gitlab-ci.yml`](.gitlab-ci.yml).
-
-> **Using GitHub?** This is a GitLab-only fork. Use upstream
-> [withastro/triagebot-action](https://github.com/withastro/triagebot-action) — it is the
-> GitHub Action this was forked from, and it is where GitHub support is maintained.
+The agent is [Flue](https://github.com/withastro/flue), as in upstream [withastro/triagebot-action](https://github.com/withastro/triagebot-action), so any model in its catalog works: setup is an API key, a model and a webhook. This fork is GitLab-only; use upstream for GitHub.
 
 ## How it works
 
-When an issue is opened, the bot adds a triage label and runs an AI agent through a multi-stage pipeline: **reproduce** the bug, **diagnose** the root cause, **verify** it's actually a bug, and **attempt a fix**. If a fix is found, it pushes a branch, publishes a preview release, and asks the reporter to confirm. When they do, it opens a merge request.
-
-Repositories that can't publish preview releases (or that prefer to skip the confirmation step) can set `auto-pr-on-fix: true` to open the merge request immediately once a fix is pushed, moving the issue straight to `fix verified`.
-
-The entire flow is driven by a finite state machine encoded as issue labels. Each issue has exactly one triage label at any time, and transitions happen automatically based on events and AI classification.
-
-### State Machine
+The issue's `triage::…` label says where it stands, and the bot keeps exactly one. `not actionable` and `fix pending` are final. A fix is pushed as `triage/issue-<iid>` with a merge request that closes the issue, so it goes through the same pipeline and review as any other change. The issue stays on `triage::fix-pending` until the merge closes it or a later run replaces the label. Closing an issue closes its fix merge request and deletes the branch.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> needs_triage: Issue opened/reopened
+    [*] --> needs_triage: Issue opened, reopened or labelled
 
-    needs_triage --> not_actionable: Not a bug report
-    needs_triage --> needs_reproduction: Missing repro
-    needs_triage --> skipped: Environment limitation
+    needs_triage --> not_actionable: Question, or ruled out by the docs
+    needs_triage --> needs_reproduction: Missing details
     needs_triage --> unable_to_reproduce: Can't reproduce
-    needs_triage --> unable_to_fix: Reproduced, no fix
-    needs_triage --> fix_pending: Reproduced + fix found
-    needs_triage --> failed: Unexpected triage failure
+    needs_triage --> unable_to_fix: Reproduced, no fix or fix refused
+    needs_triage --> fix_pending: Fixed, merge request opened
+    needs_triage --> needs_approval: Feature, plan posted
+    needs_triage --> failed: Run failed
 
-    fix_pending --> fix_verified: Reporter confirms fix
-    fix_pending --> fix_rejected: Reporter says fix fails
+    needs_approval --> approved: Maintainer approves
+    needs_approval --> needs_triage: New comment revises the plan
+    approved --> fix_pending: Plan implemented
+    approved --> unable_to_fix: Plan didn't work
+    approved --> failed: Run failed
 
-    needs_reproduction --> needs_triage: New comment with repro
-    unable_to_reproduce --> needs_triage: New comment with info
-    unable_to_fix --> needs_triage: New comment with info
-    failed --> needs_triage: New comment with info, max 3 attempts
-    fix_rejected --> needs_triage: New comment with info
+    needs_reproduction --> needs_triage: New comment
+    unable_to_reproduce --> needs_triage: New comment
+    unable_to_fix --> needs_triage: New comment
+    failed --> needs_triage: New comment, until 3 failures in a row
+
+    fix_pending --> [*]: Merge request merged
 
     state needs_triage {
         direction LR
         [*] --> reproduce
         reproduce --> diagnose
         diagnose --> verify
-        verify --> fix
-    }
-
-    state fix_verified {
-        direction LR
-        [*] --> create_pr
+        verify --> fix: bug
+        verify --> plan: feature
     }
 ```
-
-### Label Reference
 
 | Label | Meaning |
 |-------|---------|
-| `triage: needs triage` | Waiting for the triage agent to run |
-| `triage: not actionable` | Not a bug report (feature request, discussion, etc.) |
-| `triage: needs reproduction` | Missing reproduction or expected behavior description |
-| `triage: skipped` | Cannot triage in CI (host-specific, unsupported runtime/version) |
-| `triage: unable to reproduce` | Agent attempted reproduction but could not reproduce |
-| `triage: unable to fix` | Bug reproduced and diagnosed, but no fix found |
-| `triage: failed` | Triage failed unexpectedly; can be retried up to 3 failed attempts |
-| `triage: fix pending` | Fix pushed to branch, waiting for reporter confirmation |
-| `triage: fix rejected` | Reporter says the proposed fix does not work |
-| `triage: fix verified` | Reporter confirmed the fix works, merge request created |
+| `triage::needs-triage` | A run is queued or in progress |
+| `triage::not-actionable` | A question, or ruled out by a documented decision. Final |
+| `triage::needs-reproduction` | The report lacks what the agent needs to locate the problem |
+| `triage::unable-to-reproduce` | The code doesn't behave as reported |
+| `triage::unable-to-fix` | Diagnosed, but no fix it could defend, or the fix was refused |
+| `triage::needs-approval` | A feature; the plan is posted and waits for a Maintainer |
+| `triage::approved` | A Maintainer approved the plan; the run implementing it is queued |
+| `triage::fix-pending` | Merge request open on `triage/issue-<iid>`. Final until merged |
+| `triage::failed` | The run failed; the issue says why |
 
-All label names are customizable via job inputs.
+Comments retry the issue on every label except `not-actionable`, `approved` and `fix-pending`.
 
-**Re-triageable labels** — when a new comment arrives on an issue with one of these labels, the bot evaluates whether the comment contains new actionable information and potentially re-runs triage:
+A run starts when:
 
-- `triage: needs triage`
-- `triage: needs reproduction`
-- `triage: unable to reproduce`
-- `triage: unable to fix`
-- `triage: failed`
-- `triage: fix rejected`
+- **A Reporter or above opens or reopens an issue**, unless it is opened already carrying a `triage::` label other than `triage::needs-triage`. Issue templates can set `triage::not-actionable` to opt out.
+- **A Reporter or above adds `triage::needs-triage`.** This triages an existing issue, or runs one again after a final label.
+- **A Maintainer swaps `triage::needs-approval` for `triage::approved`.** That run implements the bot's plan; see [Features](#features).
+- **A Reporter or above comments on an issue labelled `needs triage`, `needs reproduction`, `unable to reproduce`, `unable to fix`, `needs approval` or `failed`.** The new run sees the conversation, so answering the bot's question is enough. Internal notes start no run. After three failed runs in a row, comments stop retrying; adding the label or reopening still does.
 
-**Terminal labels** — the bot takes no further action:
+Only people with at least the Reporter role start a run, and never project or group bot users. Guests' issues wait until a Reporter adds the label, and Guests' comments are never read, so a Reporter restates a Guest's answer. Nothing the bot does itself starts a run. A run that fails, or whose agent hits its 22-minute limit, moves the issue to `triage::failed` and says so on the issue.
 
-- `triage: fix verified`
-- `triage: not actionable`
-- `triage: skipped`
+`scripts/triage-route.jq` decides from the webhook body what to do, `scripts/triage.sh` does it, and `prompt.md` is what the agent is told. The agent itself is `src/agent.ts`: the instructions and issue go in on stdin, and `{outcome, comment, commit_message}` comes out on stdout.
+
+### Features
+
+A feature is anything beyond the smallest change that makes the code do what its documentation says it does. The bot doesn't build one on its own. It posts a plan and labels the issue `triage::needs-approval`:
+
+- **Slice:** one change, small enough for one merge request
+- **Touches:** the files it will change, security-relevant changes first
+- **Out of scope:** the rest of the feature, as follow-ups
+- **Conflicts:** any documented decision it runs against
+
+Comments from a Reporter or above revise the plan. A Maintainer swaps `triage::needs-approval` for `triage::approved` to have it built. That run gets the bot's last plan comment as its spec, not the issue description, which its author can still edit. It implements that slice and opens a merge request as for a fix, or ends on `unable to fix`. `triage.sh` enforces the approval, not the prompt. `approved` only counts when it replaces `needs-approval`, and only from a Maintainer; anyone else's goes back to `needs-approval`. An issue opened already carrying it is skipped, and `<issue>` or `<approved-plan>` tags in the issue text are defused.
+
+To turn a feature down, close the issue or swap the label for `triage::not-actionable`.
 
 ## Setup
 
-The job builds and runs the bot from its own checkout, so **use a fork or vendored copy of
-this repo** — a remote `include:` from your project would resolve `dist/index.mjs` against
-your checkout and fail.
+### 1. Include the job
 
-### 1. Wire the webhook
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/jakob1379/gitlab-triagebot-action/<commit>/triage.gitlab-ci.yml
 
-GitLab has no issue-event pipeline source, but it does not need an external webhook
-receiver either: a project webhook can POST straight at the pipeline trigger endpoint, as
-long as the ref is in the URL.
-
-Under **Settings → Webhooks**, add a hook with the **Issues events** and **Comments
-events** triggers and this URL:
-
-```text
-https://gitlab.example.com/api/v4/projects/<id>/ref/main/trigger/pipeline?token=<trigger_token>
+triage:
+  variables:
+    TRIAGEBOT_REF: <commit>
 ```
 
-The ref in the URL takes precedence over the payload, and GitLab exposes the full webhook
-body to the job as `$TRIGGER_PAYLOAD` — a *file path*, which is what the bot reads the
-event from.
+The job fetches this repository at `TRIAGEBOT_REF`, builds the agent and runs it in your project's checkout. Pin both to the same full commit SHA, not a branch, which can move under you.
 
-`CI_PIPELINE_SOURCE` is `trigger`, not anything issue-specific, so `rules:` cannot gate on
-the event type (the payload is a file, which `rules:` cannot read). Gating happens in-job:
-the router skips merge request comments, and the bot resolves its own token username so it
-ignores the comments it posts itself.
+Keep merge request pipelines off the bot's branches, and keep a new trigger pipeline from cancelling a running one:
 
-Requires GitLab 16.11+, for `object_attributes.action` on note hooks.
-
-### 2. Create triage skills
-
-The bot needs project-specific skill files that tell the AI agent how to work with your
-codebase. Create these in the directory specified by `triage-skill`:
-
-```text
-.agents/skills/triage/
-  SKILL.md          # Orchestration: defines the step order and early exits
-  reproduce.md      # How to reproduce bugs in your project
-  diagnose.md       # How to find root causes in your codebase
-  verify.md         # How to distinguish bugs from intended behavior
-  fix.md            # How to write and verify fixes
+```yaml
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+      auto_cancel:
+        on_new_commit: none
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^triage\//
+      when: never
+    - when: always
 ```
 
-Each file is a Markdown document with instructions for the AI agent. The
-[`examples/skills/triage/`](examples/skills/triage/) directory contains starter templates
-you can copy and customize. Look for `<!-- CUSTOMIZE -->` comments indicating
-project-specific sections.
+Merge your own rules into this if you already have a `workflow:` block. Every issue event and comment starts a pipeline whose only job is `triage`, and most of those decide to skip.
 
-### 3. Set the CI/CD variables
+### 2. Set the CI/CD variables
 
-Inputs are read from the environment as `INPUT_*`, so masked CI/CD variables are all that
-is needed — there is no `with:` block to fill in. GitLab variable keys allow only letters,
-digits and underscores, so a hyphenated input name maps to its underscored form:
-`triage-model` becomes `INPUT_TRIAGE_MODEL`.
+Mark `TRIAGE_TOKEN` and `TRIAGE_API_KEY` masked and **protected**, so only pipelines on protected branches get them, and keep your default branch protected: the webhook runs triage there. Scope them to the `triage` environment as well, but that alone is not access control, since any job on a branch that receives the variables can declare `environment: triage`:
 
-| Variable | Notes |
-|----------|-------|
-| `INPUT_READ_TOKEN` | Project access token, `read_api` + `read_repository` (the fix-branch lookup uses git) |
-| `INPUT_WRITE_TOKEN` | Project access token, `api` + `write_repository`. **`CI_JOB_TOKEN` cannot write issues**, so it will not do |
-| `INPUT_ANTHROPIC_API_KEY` | Or `INPUT_CLOUDFLARE_API_KEY` + `INPUT_CLOUDFLARE_ACCOUNT_ID` |
-| `INPUT_BOT_LOGINS` | Optional. Other bots whose comments should not trigger triage, comma-separated |
+| Variable | |
+|----------|-|
+| `TRIAGE_TOKEN` | Project access token, Developer role, `api` and `write_repository`. The bot comments and pushes as its bot user. |
+| `TRIAGE_API_KEY` | API key for the model's provider. |
+| `TRIAGE_MODEL` | `provider/model-id` from [pi-ai's catalog](https://github.com/earendil-works/pi/tree/main/packages/ai), such as `anthropic/claude-opus-4-8` or `openrouter/moonshotai/kimi-k2.6`. |
+| `TRIAGE_THINKING` | Optional. Reasoning effort: `minimal`, `low`, `medium`, `high` (the default) or `xhigh`. |
+| `TRIAGE_PROTECTED_PATHS` | Optional. Extended regex of paths a fix may not touch; the default is in `scripts/triage.sh`. |
+| `CLOUDFLARE_ACCOUNT_ID` | Only for `cloudflare-workers-ai/*` models. |
 
-The required `triage-skill` input is already set in the job file as
-`INPUT_TRIAGE_SKILL: .agents/skills/triage` — change it there if your skills live
-elsewhere.
+Under Settings → CI/CD → Variables, set "Minimum role to use pipeline variables" to "No one allowed". Variables passed with the trigger token override the job's own, so without this its holder could set `TRIAGEBOT_REPO` or `TRIAGEBOT_REF` and run their code with your tokens. The webhook body still arrives, as the `TRIGGER_PAYLOAD` file.
 
-You need credentials for the AI agent. Choose one of:
+GitLab creates the `triage::…` labels the first time the bot sets them. Scoped labels need GitLab Premium; on Free they are plain labels, and the bot still removes the old one when it sets a new one.
 
-- **`anthropic-api-key`** — to use Anthropic models (the default `triage-model` /
-  `verification-model`).
-- **`cloudflare-api-key`** + **`cloudflare-account-id`** — to use Cloudflare Workers AI
-  models (e.g. Kimi). Requires setting `triage-model` / `verification-model` to a
-  `cloudflare-workers-ai/*` model.
+### 3. Create the trigger and webhook
 
-Workers AI is called over its OpenAI-compatible REST endpoint, so the job still runs on a
-standard GitLab runner — no Worker deployment is required.
+A Maintainer creates them by hand, so the trigger token stays out of anything Developers can read. Anyone holding it can run any branch's pipeline as that Maintainer:
 
-```text
-INPUT_CLOUDFLARE_API_KEY     = …
-INPUT_CLOUDFLARE_ACCOUNT_ID  = …
-INPUT_TRIAGE_MODEL           = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code
-INPUT_VERIFICATION_MODEL     = cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
+```bash
+project=<project id>
+token=$(glab api -X POST projects/$project/triggers -f description="Issue triage webhook" | jq -r .token)
+glab api -X POST projects/$project/hooks -f name="Issue triage" \
+  -f url="$CI_SERVER_URL/api/v4/projects/$project/ref/main/trigger/pipeline?token=$token" \
+  -F push_events=false -F issues_events=true -F confidential_issues_events=true \
+  -F note_events=true -F confidential_note_events=true >/dev/null
+unset token
 ```
 
-### Things GitLab does differently
+Replace `$CI_SERVER_URL` with your instance, such as `https://gitlab.com`, and `main` with your default branch. Then send a test issue event from Settings → Webhooks and check that a triage pipeline starts. To rotate the trigger, delete the old hook and trigger first; two live hooks start every run twice.
 
-- **Concurrency is project-wide** (`resource_group`), not per issue. The issue number
-  lives inside the payload file, which `resource_group` cannot read.
-- **Bot identity is resolved at runtime** via `glab api user`, because a project access
-  token posts as `project_<id>_bot_<hash>` — a name nothing can hardcode. The job fails
-  if that lookup fails: without its own name the bot cannot tell its comments from a
-  reporter's, and would read its own triage report as the reporter confirming the fix.
-- **Notes carry no author association.** `issueDetails` reports every commenter as
-  `NONE`, so skill logic keyed on `MEMBER` / `COLLABORATOR` / `OWNER` never fires.
+### 4. Tell the agent about your project
 
+Flue loads `AGENTS.md` and the skills under `.agents/skills/` from the checkout, so that is where the project-specific part goes: how to build and test, what is deliberate, where decisions are written down. The prompt points the agent at the README and contributor docs as well. The agent has no package manager it can use as an unprivileged user, so it gets tools from Nix, pinned to your `flake.nix` when there is one.
 
-## Inputs
+## Security model
 
-| Input | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `read-token` | Yes | | Project access token for reading issues, labels and MRs |
-| `write-token` | Yes | | Project access token for posting notes, pushing branches, creating MRs |
-| `anthropic-api-key` | No¹ | | Anthropic API key for LLM calls |
-| `cloudflare-api-key` | No¹ | | Cloudflare API token with Workers AI access. Enables `cloudflare-workers-ai/*` models. Requires `cloudflare-account-id` |
-| `cloudflare-account-id` | No¹ | | Cloudflare account ID for the Workers AI REST endpoint. Required when `cloudflare-api-key` is set |
-| `triage-skill` | Yes | | Path to triage skill directory (`SKILL.md`, `reproduce.md`, etc.) |
-| `pr-skill` | No | | Path to merge request writer skill directory. If not provided, uses a built-in prompt. |
-| `auto-pr-on-fix` | No | `false` | When `true`, open a merge request immediately after triage finds and pushes a fix, skipping the preview/confirmation flow. |
-| `bot-logins` | No | | Comma-separated list of *other* bot usernames whose comments should be ignored. The bot's own username is resolved at runtime and always added; it does not need to be listed here. |
-| `build-command` | No | | Command to build the project before triage |
-| `triage-model` | No | `anthropic/claude-opus-4-6` | Model for the triage pipeline (`provider/model-id`, e.g. `cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code`) |
-| `verification-model` | No | `anthropic/claude-sonnet-4-6` | Model for fix verification and retriage checks |
+Whoever writes the issue can steer the agent, so the agent holds nothing that writes to GitLab:
 
-¹ Provide either `anthropic-api-key`, or both `cloudflare-api-key` and `cloudflare-account-id`. The credentials must match the provider prefix used in `triage-model` / `verification-model`.
+- **No GitLab token.** The agent runs as its own user, `triage`, created in the job's container, with `env -i` and only the model's API key. It can't read the environment of `scripts/triage.sh`, which holds `TRIAGE_TOKEN`, or write `.git`. Every process it leaves behind is killed before the script uses the token. The agent can read its own API key, so use a key with a spend limit.
+- **The script makes every write.** It is parsed in full before the agent starts, so editing it mid-run changes nothing. It refuses to publish anything containing a token verbatim, and fails the run if the agent changed `.git` config, hooks, refs or excludes.
+- **Nothing runs before review.** It pushes with `ci.skip`, the workflow rule above blocks merge request pipelines for `triage/` branches, and it escapes quick actions and mentions in the agent's comment. A maintainer reads the diff, runs a pipeline for the branch under CI/CD → Pipelines → Run pipeline, and merges once it passes. That is a `web` pipeline, so your test jobs need rules that run on it. If "Pipelines must succeed" is on, keep "Skipped pipelines are considered successful" off.
+- **Tripwires, not a control.** A fix touching `TRIAGE_PROTECTED_PATHS` (by default CI config, agent instructions, `.envrc`, `flake.nix`/`flake.lock`, pre-commit config, `renovate.json`, `.git{attributes,ignore,modules}`), a binary file or an embedded repository is not pushed, and the issue ends on `unable to fix` with the agent's diagnosis. The control is the maintainer reading the diff: look hardest at access changes, at anything that runs during build or install (package scripts, build hooks), and at anything a developer's tooling loads on checkout.
 
-### Label inputs
+The webhook body isn't authenticated, so the job doesn't trust its sender. It confirms who opened, reopened, labelled or commented from the issue's notes and resource events, and ignores the event otherwise. The trigger token in the webhook URL lets its holder start triage runs, so treat it as a secret and rotate it as in [step 3](#3-create-the-trigger-and-webhook).
 
-All labels are customizable. These are the defaults:
+The job's container reaches the internet. On a runner that can also reach internal networks, block job containers from them, or run triage on a runner that can't.
 
-| Input | Default |
-|-------|---------|
-| `label-needs-triage` | `triage: needs triage` |
-| `label-not-actionable` | `triage: not actionable` |
-| `label-needs-reproduction` | `triage: needs reproduction` |
-| `label-skipped` | `triage: skipped` |
-| `label-unable-to-reproduce` | `triage: unable to reproduce` |
-| `label-unable-to-fix` | `triage: unable to fix` |
-| `label-failed` | `triage: failed` |
-| `label-fix-pending` | `triage: fix pending` |
-| `label-fix-rejected` | `triage: fix rejected` |
-| `label-fix-verified` | `triage: fix verified` |
-| `pr-label-fix-verified` | `fix verified` |
-
-## Architecture
-
-The bot has two layers:
-
-**Bot-owned** — the state machine, GitLab API interactions, and LLM calls that drive the workflow:
-- FSM routing based on event type and current label
-- Re-triage evaluation (is there new actionable information?)
-- Fix verification (did the reporter confirm the fix?)
-- Comment generation from triage findings
-- Merge request creation from verified fix branches (using project's MR skill or built-in prompt)
-- Branch cleanup on issue close
-
-**Project-owned** — the skill files that teach the AI agent about your specific codebase:
-- **Triage skills** (required) — how to reproduce, diagnose, verify, and fix bugs
-- **MR writer skill** (optional) — how to format merge request titles and bodies for your project
-
-The bot invokes project skills via [Flue](https://github.com/anthropics/flue), an agent orchestration framework. The AI agent runs shell commands on the CI runner to build, test, and debug the project.
-
-**Forge layer:**
-
-- `src/gitlab.ts` — every GitLab call, via `glab` subcommands
-- `src/git.ts` — plain git (commit, push), kept out of the agent's sandbox so the write token never reaches the LLM
-- `src/gitlab-event.ts` — GitLab webhook payload → the event the router expects
+Concurrency is project-wide (`resource_group: triage`): the issue number is inside the payload file, which `resource_group` can't read. A comment posted while a run is in progress is read only if that run ends on a label that comments retry. GitLab.com creates at most 25 pipelines a minute per project, commit and user, and disables a webhook for a while after four failed deliveries, so a burst of comments can make it miss an issue; adding `triage::needs-triage` recovers it.
 
 ## Development
 
 ```bash
-pnpm install
-pnpm test          # Unit + integration tests (router, labels, glab argv, event adapter)
-pnpm test:evals    # LLM eval tests (requires ANTHROPIC_API_KEY)
-pnpm build         # Bundle to dist/
-pnpm lint          # Biome check
-pnpm format        # Biome format
-```
-
-### Running the pipelines locally
-
-[`flake.nix`](flake.nix) provides `gitlab-ci-local`, `glab`, node and pnpm:
-
-```bash
 nix develop
+pnpm install
+pnpm test     # build, node tests, then scripts/test-triage{,-route}.sh against stub glab and agent
+pnpm lint
 ```
 
-An event payload that routes to `skip` exercises install → build → event parsing →
-routing without any LLM calls. It is not offline: the entrypoint resolves the bot's
-own username through `glab api user` before it parses anything, and refuses to run
-if that fails, so a working write token is still required.
-
-```bash
-# TRIGGER_PAYLOAD is a path to a GitLab webhook body. gitlab-ci-local only
-# copies git-known files into the job, so the payload must be tracked or staged.
-gitlab-ci-local triage \
-  --variable CI_PIPELINE_SOURCE=trigger \
-  --variable CI_PROJECT_PATH=group/project \
-  --variable TRIGGER_PAYLOAD='$CI_PROJECT_DIR/trigger-payload.json' \
-  --variable INPUT_READ_TOKEN=… --variable INPUT_WRITE_TOKEN=… \
-  --variable INPUT_ANTHROPIC_API_KEY=…
-```
-
-The lint and test job runs the same way:
-
-```bash
-gitlab-ci-local test --variable CI_PIPELINE_SOURCE=merge_request_event
-```
+`scripts/test-triage.sh` runs `scripts/triage.sh` end to end with stub `glab` and `node`, pushing to a local bare repository. Requires GitLab 16.11+, for `object_attributes.action` on note hooks.
