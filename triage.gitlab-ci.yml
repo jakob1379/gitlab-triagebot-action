@@ -29,6 +29,6 @@ triage:
     - git -C /opt/triagebot fetch -q --depth 1 "$TRIAGEBOT_REPO" "$TRIAGEBOT_REF"
     - git -C /opt/triagebot checkout -q FETCH_HEAD
     - corepack enable
-    - (cd /opt/triagebot && pnpm install --frozen-lockfile && pnpm build)
+    - (cd /opt/triagebot && pnpm install --frozen-lockfile --ignore-scripts && pnpm build)
   script:
     - /opt/triagebot/scripts/triage.sh

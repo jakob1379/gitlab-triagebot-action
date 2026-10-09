@@ -113,7 +113,7 @@ Merge your own rules into this if you already have a `workflow:` block. Every is
 
 ### 2. Set the CI/CD variables
 
-Scope the secrets to the `triage` environment, so no other job sees them:
+Mark `TRIAGE_TOKEN` and `TRIAGE_API_KEY` masked and **protected**, so only pipelines on protected branches get them, and keep your default branch protected: the webhook runs triage there. Scope them to the `triage` environment as well, but that alone is not access control, since any job on a branch that receives the variables can declare `environment: triage`:
 
 | Variable | |
 |----------|-|
@@ -152,7 +152,7 @@ Whoever writes the issue can steer the agent, so the agent holds nothing that wr
 
 - **No GitLab token.** The agent runs as its own user, `triage`, created in the job's container, with `env -i` and only the model's API key. It can't read the environment of `scripts/triage.sh`, which holds `TRIAGE_TOKEN`, or write `.git`. Every process it leaves behind is killed before the script uses the token. The agent can read its own API key, so use a key with a spend limit.
 - **The script makes every write.** It is parsed in full before the agent starts, so editing it mid-run changes nothing. It refuses to publish anything containing a token verbatim, and fails the run if the agent changed `.git` config, hooks, refs or excludes.
-- **Nothing runs before review.** It pushes with `ci.skip`, the workflow rule above blocks merge request pipelines for `triage/` branches, and it escapes quick actions and mentions in the agent's comment. A maintainer reads the diff, runs a pipeline for the branch under CI/CD → Pipelines → Run pipeline, and merges once it passes. If "Pipelines must succeed" is on, keep "Skipped pipelines are considered successful" off.
+- **Nothing runs before review.** It pushes with `ci.skip`, the workflow rule above blocks merge request pipelines for `triage/` branches, and it escapes quick actions and mentions in the agent's comment. A maintainer reads the diff, runs a pipeline for the branch under CI/CD → Pipelines → Run pipeline, and merges once it passes. That is a `web` pipeline, so your test jobs need rules that run on it. If "Pipelines must succeed" is on, keep "Skipped pipelines are considered successful" off.
 - **Tripwires, not a control.** A fix touching `TRIAGE_PROTECTED_PATHS` (by default CI config, agent instructions, `.envrc`, `flake.nix`/`flake.lock`, pre-commit config, `renovate.json`, `.git{attributes,ignore,modules}`), a binary file or an embedded repository is not pushed, and the issue ends on `unable to fix` with the agent's diagnosis. The control is the maintainer reading the diff: look hardest at access changes, at anything that runs during build or install (package scripts, build hooks), and at anything a developer's tooling loads on checkout.
 
 The job's container reaches the internet. On a runner that can also reach internal networks, block job containers from them, or run triage on a runner that can't.

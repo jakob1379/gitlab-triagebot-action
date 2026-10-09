@@ -10,6 +10,8 @@ test:
     # branch push from running this a second time alongside the MR pipeline.
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+    # Run pipeline on a triage/ branch, which is how a maintainer checks a fix.
+    - if: $CI_PIPELINE_SOURCE == "web"
   variables:
     COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
   before_script:

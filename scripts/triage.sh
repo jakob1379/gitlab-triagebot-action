@@ -23,6 +23,7 @@ fi
 branch="triage/issue-$iid"
 
 work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
 api --paginate "projects/$project/members/all?per_page=100" | jq -s 'add | map(select(.access_level >= 20 and .state == "active") | {username, access_level})' >"$work/access.json"
 jq 'map(.username)' "$work/access.json" >"$work/members.json"
 sender=$(jq -r .user.username "$TRIGGER_PAYLOAD")
