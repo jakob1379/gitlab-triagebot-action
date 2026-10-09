@@ -6,6 +6,8 @@
 # and set TRIAGEBOT_REF to the same commit. The job fetches the bot at that ref
 # and runs it in the project's checkout. See README.md for the variables and
 # the webhook that starts it.
+#
+# Set "Minimum role to use pipeline variables" to "No one allowed" (README.md, Setup step 2).
 
 triage:
   image: node:24-alpine

@@ -22,6 +22,9 @@ case "\$method \$1" in
 "GET user") echo '{"username":"$bot"}' ;;
 "GET projects/1/members/all"*) echo '[{"username":"alice","access_level":30,"state":"active"},{"username":"maint","access_level":40,"state":"active"},{"username":"guest","access_level":10,"state":"active"}]' ;;
 "GET projects/1/issues/5") cat "\$STATE/issue.json" 2>/dev/null || echo '{"state":"opened","labels":[],"title":"t","description":"d","author":{"username":"alice"}}' ;;
+"GET projects/1/issues/5/notes/"*) cat "\$STATE/note.json" 2>/dev/null || jq '{author: .user}' "\$STATE/payload.json" ;;
+"GET projects/1/issues/5/resource_state_events"*) cat "\$STATE/state_events.json" 2>/dev/null || jq '[{state: "reopened", user}]' "\$STATE/payload.json" ;;
+"GET projects/1/issues/5/resource_label_events"*) cat "\$STATE/label_events.json" 2>/dev/null || jq '.user as \$u | [.changes.labels.current[]? | {action: "add", label: {name: .title}, user: \$u}]' "\$STATE/payload.json" ;;
 "GET projects/1/issues/5/notes"*) [ ! -f "\$STATE/notesfail" ] || exit 1; cat "\$STATE/notes.json" 2>/dev/null || echo '[]' ;;
 "POST projects/1/issues/5/notes") [ ! -f "\$STATE/postfail" ] || exit 1; echo '{}' ;;
 "POST projects/1/merge_requests") [ ! -f "\$STATE/mrfail" ] || exit 1; echo '{}' ;;
@@ -36,8 +39,9 @@ opened() { printf '{"object_kind":"issue","user":{"username":"%s"},"object_attri
 run() {
 	local name=$1 edit=$2 want=$3 outcome=${4:-fixed} payload=${5:-$(opened alice)} dir="$t/$1"
 	mkdir -p "$dir"
-	[ -f "$t/$name.issue.json" ] && cp "$t/$name.issue.json" "$dir/issue.json"
-	[ -f "$t/$name.notes.json" ] && cp "$t/$name.notes.json" "$dir/notes.json"
+	for f in issue notes note state_events label_events; do
+		[ ! -f "$t/$name.$f.json" ] || cp "$t/$name.$f.json" "$dir/$f.json"
+	done
 	printf '%s' "$payload" >"$dir/payload.json"
 	git clone -q "$repo" "$dir/checkout"
 	cp -r "$repo/scripts" "$repo/prompt.md" "$dir/checkout/"
@@ -229,6 +233,23 @@ run noplan "" failed fixed "$(approve maint)"
 expect noplan calls "there is no plan from triage to implement"
 run implementplan "" failed "needs approval" "$(approve maint)"
 expect implementplan calls "neither implemented the approved plan"
+
+echo '{"state":"opened","labels":["triage::approved"],"title":"t","description":"d","author":{"username":"alice"}}' >"$t/forgedapproval.issue.json"
+echo "$plan_note" >"$t/forgedapproval.notes.json"
+echo '[{"action":"add","label":{"name":"triage::approved"},"user":{"username":"maint"}},{"action":"add","label":{"name":"triage::approved"},"user":{"username":"alice"}}]' >"$t/forgedapproval.label_events.json"
+run forgedapproval "echo '# x' >> src/fix.ts" none fixed "$(approve maint)"
+expect forgedapproval out "The webhook's sender doesn't match GitLab's records"
+
+echo '{"state":"opened","labels":["triage::unable-to-fix"],"title":"t","description":"d","author":{"username":"alice"}}' >"$t/forgednote.issue.json"
+echo '{"author":{"username":"guest"}}' >"$t/forgednote.note.json"
+run forgednote "" none fixed "$note_event"
+expect forgednote out "The webhook's sender doesn't match GitLab's records"
+echo '{"state":"opened","labels":[],"title":"t","description":"d","author":{"username":"guest"}}' >"$t/forgedopen.issue.json"
+run forgedopen "" none
+expect forgedopen out "The webhook's sender doesn't match GitLab's records"
+echo '[{"state":"reopened","user":{"username":"alice"}},{"state":"closed","user":{"username":"alice"}},{"state":"reopened","user":{"username":"guest"}}]' >"$t/forgedreopen.state_events.json"
+run forgedreopen "" none fixed '{"object_kind":"issue","user":{"username":"alice"},"object_attributes":{"action":"reopen","iid":5}}'
+expect forgedreopen out "The webhook's sender doesn't match GitLab's records"
 
 run apikeyleak "echo api-key-tok >> src/fix.ts" failed
 expect apikeyleak calls "contained a token"

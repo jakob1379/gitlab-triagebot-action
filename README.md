@@ -94,7 +94,7 @@ triage:
     TRIAGEBOT_REF: <commit>
 ```
 
-The job fetches this repository at `TRIAGEBOT_REF`, builds the agent and runs it in your project's checkout. Pin both to the same commit.
+The job fetches this repository at `TRIAGEBOT_REF`, builds the agent and runs it in your project's checkout. Pin both to the same full commit SHA, not a branch, which can move under you.
 
 Keep merge request pipelines off the bot's branches, and keep a new trigger pipeline from cancelling a running one:
 
@@ -123,6 +123,8 @@ Mark `TRIAGE_TOKEN` and `TRIAGE_API_KEY` masked and **protected**, so only pipel
 | `TRIAGE_THINKING` | Optional. Reasoning effort: `minimal`, `low`, `medium`, `high` (the default) or `xhigh`. |
 | `TRIAGE_PROTECTED_PATHS` | Optional. Extended regex of paths a fix may not touch; the default is in `scripts/triage.sh`. |
 | `CLOUDFLARE_ACCOUNT_ID` | Only for `cloudflare-workers-ai/*` models. |
+
+Under Settings → CI/CD → Variables, set "Minimum role to use pipeline variables" to "No one allowed". Variables passed with the trigger token override the job's own, so without this its holder could set `TRIAGEBOT_REPO` or `TRIAGEBOT_REF` and run their code with your tokens. The webhook body still arrives, as the `TRIGGER_PAYLOAD` file.
 
 GitLab creates the `triage::…` labels the first time the bot sets them. Scoped labels need GitLab Premium; on Free they are plain labels, and the bot still removes the old one when it sets a new one.
 
@@ -154,6 +156,8 @@ Whoever writes the issue can steer the agent, so the agent holds nothing that wr
 - **The script makes every write.** It is parsed in full before the agent starts, so editing it mid-run changes nothing. It refuses to publish anything containing a token verbatim, and fails the run if the agent changed `.git` config, hooks, refs or excludes.
 - **Nothing runs before review.** It pushes with `ci.skip`, the workflow rule above blocks merge request pipelines for `triage/` branches, and it escapes quick actions and mentions in the agent's comment. A maintainer reads the diff, runs a pipeline for the branch under CI/CD → Pipelines → Run pipeline, and merges once it passes. That is a `web` pipeline, so your test jobs need rules that run on it. If "Pipelines must succeed" is on, keep "Skipped pipelines are considered successful" off.
 - **Tripwires, not a control.** A fix touching `TRIAGE_PROTECTED_PATHS` (by default CI config, agent instructions, `.envrc`, `flake.nix`/`flake.lock`, pre-commit config, `renovate.json`, `.git{attributes,ignore,modules}`), a binary file or an embedded repository is not pushed, and the issue ends on `unable to fix` with the agent's diagnosis. The control is the maintainer reading the diff: look hardest at access changes, at anything that runs during build or install (package scripts, build hooks), and at anything a developer's tooling loads on checkout.
+
+The webhook body isn't authenticated, so the job doesn't trust its sender. It confirms who opened, reopened, labelled or commented from the issue's notes and resource events, and ignores the event otherwise. The trigger token in the webhook URL lets its holder start triage runs, so treat it as a secret and rotate it as in [step 3](#3-create-the-trigger-and-webhook).
 
 The job's container reaches the internet. On a runner that can also reach internal networks, block job containers from them, or run triage on a runner that can't.
 

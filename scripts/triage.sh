@@ -26,16 +26,33 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 api --paginate "projects/$project/members/all?per_page=100" | jq -s 'add | map(select(.access_level >= 20 and .state == "active") | {username, access_level})' >"$work/access.json"
 jq 'map(.username)' "$work/access.json" >"$work/members.json"
-sender=$(jq -r .user.username "$TRIGGER_PAYLOAD")
-if ! jq -e --arg sender "$sender" 'any(.[]; . == $sender) and ($sender | test("^(project|group)_[0-9]+_bot") | not)' "$work/members.json" >/dev/null; then
-	echo "Triggered by a bot or someone below Reporter, nothing to do"
-	exit 0
-fi
 
 bot=$(api user | jq -r .username)
 api "projects/$project/issues/$iid" >"$work/issue.json"
 action=$(jq -r --arg bot "$bot" --slurpfile issue "$work/issue.json" -f "$bot_dir/scripts/triage-route.jq" "$TRIGGER_PAYLOAD")
 echo "Issue #$iid: $action"
+[ "$action" != skip ] || exit 0
+
+sender=$(jq -r .user.username "$TRIGGER_PAYLOAD")
+case $(jq -r '"\(.object_kind):\(.object_attributes.action)"' "$TRIGGER_PAYLOAD"):$action in
+note:*:*) actor=$(api "projects/$project/issues/$iid/notes/$(jq -r '.object_attributes.id | numbers // 0' "$TRIGGER_PAYLOAD")" | jq -r '.author.username // empty') ;;
+issue:open:*) actor=$(jq -r '.author.username // empty' "$work/issue.json") ;;
+issue:reopen:*) actor=$(api --paginate "projects/$project/issues/$iid/resource_state_events?per_page=100" | jq -rs 'add | map(select(.state == "reopened")) | last | .user.username // empty') ;;
+issue:update:*)
+	label=triage::needs-triage
+	[ "$action" != implement ] || label=triage::approved
+	actor=$(api --paginate "projects/$project/issues/$iid/resource_label_events?per_page=100" | jq -rs --arg label "$label" 'add | map(select(.action == "add" and .label.name == $label)) | last | .user.username // empty')
+	;;
+*) actor=$sender ;;
+esac
+if [ "$actor" != "$sender" ]; then
+	echo "The webhook's sender doesn't match GitLab's records, nothing to do"
+	exit 0
+fi
+if ! jq -e --arg sender "$sender" 'any(.[]; . == $sender) and ($sender | test("^(project|group)_[0-9]+_bot") | not)' "$work/members.json" >/dev/null; then
+	echo "Triggered by a bot or someone below Reporter, nothing to do"
+	exit 0
+fi
 
 close_mrs() {
 	local mrs mr
@@ -59,7 +76,6 @@ set_label() {
 }
 
 case $action in
-skip) exit 0 ;;
 cleanup)
 	retire_branch >/dev/null
 	exit 0
