@@ -1,0 +1,36 @@
+# The triage job. Include it from the project to triage, pinned to a commit:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/jakob1379/gitlab-triagebot-action/<commit>/triage.gitlab-ci.yml
+#
+# and set TRIAGEBOT_REF to the same commit. The job fetches the bot at that ref
+# and runs it in the project's checkout. See README.md for the variables and
+# the webhook that starts it.
+#
+# Set "Minimum role to use pipeline variables" to "No one allowed" (README.md, Setup step 2).
+
+triage:
+  image: node:24-alpine
+  timeout: 30 minutes
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $TRIGGER_PAYLOAD
+  # ponytail: project-wide, the issue number is inside the payload file; per-issue needs a relay passing it as a variable
+  resource_group: triage
+  environment:
+    name: triage
+    action: prepare
+  variables:
+    TRIAGEBOT_REPO: https://github.com/jakob1379/gitlab-triagebot-action.git
+    TRIAGEBOT_REF: main
+    TRIAGE_THINKING: high
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+  before_script:
+    - apk add --no-cache bash git jq glab ripgrep nix su-exec
+    - git init -q /opt/triagebot
+    - git -C /opt/triagebot fetch -q --depth 1 "$TRIAGEBOT_REPO" "$TRIAGEBOT_REF"
+    - git -C /opt/triagebot checkout -q FETCH_HEAD
+    - corepack enable
+    - (cd /opt/triagebot && pnpm install --frozen-lockfile --ignore-scripts && pnpm build)
+  script:
+    - /opt/triagebot/scripts/triage.sh

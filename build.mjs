@@ -1,9 +1,9 @@
 import * as esbuild from 'esbuild';
 
 await esbuild.build({
-	entryPoints: ['src/index.ts'],
+	entryPoints: ['src/agent.ts'],
 	bundle: true,
-	outfile: 'dist/index.mjs',
+	outfile: 'dist/agent.mjs',
 	format: 'esm',
 	platform: 'node',
 	target: 'node22',

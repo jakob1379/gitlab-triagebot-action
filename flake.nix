@@ -14,6 +14,7 @@
             nodejs_24
             pnpm
             glab
+            jq
           ];
         };
       }
